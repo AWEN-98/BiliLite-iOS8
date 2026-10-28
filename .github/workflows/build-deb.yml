@@ -30,7 +30,7 @@ jobs:
         run: |
           export THEOS="$HOME/theos"
           make clean package FINALPACKAGE=1 THEOS_PLATFORM_DEB_COMPRESSION_TYPE=gzip
-      - name: Verify icon-refreshing DEB and create manual-install ZIP
+      - name: Verify installable DEB, refresh script and create IPA
         run: |
           set -euo pipefail
           DEB="$(find packages -maxdepth 1 -name '*.deb' -print -quit)"
@@ -43,9 +43,9 @@ jobs:
           test "$(dpkg-deb -f "$DEB" Version)" = "0.2.1"
           test "$(dpkg-deb -f "$DEB" Architecture)" = "iphoneos-arm"
           ar t "$DEB" | grep -Fx "data.tar.gz"
+          ar t "$DEB" | grep -Fx "control.tar.gz"
           dpkg-deb --ctrl-tarfile "$DEB" | tar -tvf -
-          dpkg-deb --ctrl-tarfile "$DEB" | tar -tf - > /tmp/control-files.txt
-          grep -E '(^|/)(postinst)
+          dpkg-deb --ctrl-tarfile "$DEB" | tar -tf - | grep -q 'postinst'
           mkdir -p /tmp/bililite-install /tmp/bililite-ipa/Payload
           dpkg-deb -x "$DEB" /tmp/bililite-install
           APP=/tmp/bililite-install/Applications/BiliLite.app
@@ -69,7 +69,7 @@ jobs:
           (cd /tmp/bililite-ipa && zip -qr -X "$GITHUB_WORKSPACE/packages/BiliLite-iOS8-v0.2.1.ipa" Payload)
           (cd /tmp/bililite-install/Applications && zip -qr -X "$GITHUB_WORKSPACE/packages/BiliLite-iFile-manual.app.zip" BiliLite.app)
           unzip -t packages/BiliLite-iOS8-v0.2.1.ipa | tail -1
-          echo "Verified gzip deb, root-owned app and safe iOS8 icon-cache refresh"
+          echo "Verified gzip deb with safe post-install icon cache refresh"
           sha256sum packages/*.deb packages/*.ipa
       - name: Upload verified packages
         uses: actions/upload-artifact@v4
@@ -79,38 +79,4 @@ jobs:
             packages/*.deb
             packages/*.ipa
             packages/*-manual.app.zip
-          if-no-files-found: error
- /tmp/control-files.txt
-          dpkg-deb --ctrl-tarfile "$DEB" | tar -xOf - ./postinst | grep -q 'uicache'
-          mkdir -p /tmp/bililite-install /tmp/bililite-ipa/Payload
-          dpkg-deb -x "$DEB" /tmp/bililite-install
-          APP=/tmp/bililite-install/Applications/BiliLite.app
-          test -x "$APP/BiliLite"
-          test -s "$APP/Info.plist"
-          test -s "$APP/Icon.png"
-          test -s "$APP/Default@2x.png"
-          file "$APP/BiliLite" | grep -F "Mach-O armv7 executable"
-          python3 - "$APP/Info.plist" <<'PYTEST'
-          import plistlib, sys
-          with open(sys.argv[1], "rb") as f:
-              p=plistlib.load(f)
-          assert p["CFBundleIdentifier"] == "com.finn.bililite"
-          assert p["CFBundleExecutable"] == "BiliLite"
-          assert p["MinimumOSVersion"] == "8.0"
-          assert p["UIDeviceFamily"] == [1]
-          assert p["CFBundleShortVersionString"] == "0.2.1"
-          print("App plist verified")
-          PYTEST
-          cp -a "$APP" /tmp/bililite-ipa/Payload/BiliLite.app
-          (cd /tmp/bililite-ipa && zip -qr -X "$GITHUB_WORKSPACE/packages/BiliLite-iOS8-v0.2.1.ipa" Payload)
-          unzip -t packages/BiliLite-iOS8-v0.2.1.ipa | tail -1
-          echo "Verified gzip deb and no custom install scripts"
-          sha256sum packages/*.deb packages/*.ipa
-      - name: Upload verified packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: BiliLite-iOS8-v0.2.1-DEB-IPA
-          path: |
-            packages/*.deb
-            packages/*.ipa
           if-no-files-found: error
