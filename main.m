@@ -174,6 +174,7 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
 @interface BLPlayerController : MPMoviePlayerViewController
 @property(nonatomic,strong) UIButton *speedButton;
 @property(nonatomic,strong) UILabel *liveBadge;
+@property(nonatomic,strong) UILabel *playerHint;
 @property(nonatomic,assign) BOOL liveStream;
 @property(nonatomic,assign) BOOL speedControlVisible;
 @property(nonatomic,assign) float preferredRate;
@@ -220,7 +221,15 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
         self.speedButton=speed;
         speed.alpha=0;speed.userInteractionEnabled=NO;
     }
+    UILabel *hint=[[UILabel alloc] initWithFrame:CGRectMake(0,0,224,29)];
+    hint.backgroundColor=[UIColor colorWithWhite:0 alpha:.62];
+    hint.text=self.liveStream?@"直播模式 · 仅支持兼容 HLS":@"轻点显示倍速 · 长按临时 2×";
+    hint.textColor=[UIColor whiteColor];hint.textAlignment=NSTextAlignmentCenter;
+    hint.font=[UIFont systemFontOfSize:11];hint.layer.cornerRadius=14;hint.clipsToBounds=YES;
+    hint.userInteractionEnabled=NO;
+    [self.moviePlayer.view addSubview:hint];self.playerHint=hint;
     [self positionPlayerOverlay];
+    [self performSelector:@selector(hidePlayerHint) withObject:nil afterDelay:3.5];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playbackChanged:)
       name:MPMoviePlayerPlaybackStateDidChangeNotification object:self.moviePlayer];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(movieLoaded:)
@@ -238,7 +247,11 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     CGRect b=self.moviePlayer.view.bounds;
     if(b.size.width<1 || b.size.height<1)return;
     if(self.liveBadge)self.liveBadge.frame=CGRectMake(MAX(8,b.size.width-87),12,73,28);
+    if(self.playerHint)self.playerHint.frame=CGRectMake(MAX(0,(b.size.width-224)/2),MAX(42,b.size.height-161),224,29);
     if(self.speedButton)self.speedButton.frame=CGRectMake(MAX(8,b.size.width-104),MAX(42,b.size.height-116),88,34);
+}
+- (void)hidePlayerHint {
+    [UIView animateWithDuration:.35 animations:^{self.playerHint.alpha=0;}];
 }
 - (void)playerTapped:(UITapGestureRecognizer *)gesture {
     if(gesture.state!=UIGestureRecognizerStateEnded || self.liveStream)return;
