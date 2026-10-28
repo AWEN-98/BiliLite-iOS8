@@ -1,6 +1,6 @@
 Package: com.finn.bililite
 Name: Bili Lite
-Version: 0.3.0
+Version: 0.4.0
 Architecture: iphoneos-arm
 Description: Minimal native iOS 8 build without install hooks
 Maintainer: Finn
