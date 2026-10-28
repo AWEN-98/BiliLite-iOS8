@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <MediaPlayer/MediaPlayer.h>
 #import <math.h>
+#import <CommonCrypto/CommonDigest.h>
 
 static UIColor *BLPink(void){return [UIColor colorWithRed:.93 green:.27 blue:.47 alpha:1];}
 static UIColor *BLBg(void){return [UIColor colorWithRed:.965 green:.972 blue:.985 alpha:1];}
@@ -78,6 +79,62 @@ static NSString *BLFailure(NSDictionary *json,NSError *error){
     if(error)return error.localizedDescription?:@"网络失败";
     NSString *message=BLString(json[@"message"]);
     return message.length?message:@"接口未返回可用数据，可能需要登录或请求验证";
+}
+
+static NSString *BLQueryEscape(NSString *value){
+    NSMutableCharacterSet *valid=[[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy];
+    [valid removeCharactersInString:@"&=?+/#%!'()*"];
+    NSString *clean=[[value?:@"" componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"!'()*"]] componentsJoinedByString:@""];
+    return [clean stringByAddingPercentEncodingWithAllowedCharacters:valid]?:@"";
+}
+static NSString *BLWBIKey(NSDictionary *json){
+    NSDictionary *data=[json[@"data"] isKindOfClass:[NSDictionary class]]?json[@"data"]:@{};
+    NSDictionary *wbi=[data[@"wbi_img"] isKindOfClass:[NSDictionary class]]?data[@"wbi_img"]:@{};
+    NSString *image=[BLString(wbi[@"img_url"]) lastPathComponent];
+    NSString *sub=[BLString(wbi[@"sub_url"]) lastPathComponent];
+    NSString *raw=[[image stringByDeletingPathExtension] stringByAppendingString:[sub stringByDeletingPathExtension]];
+    if(raw.length<64)return nil;
+    static const unsigned char order[64]={
+     46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,
+     33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,
+     61,26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,57,62,11,
+     36,20,34,44,52};
+    NSMutableString *result=[NSMutableString stringWithCapacity:32];
+    for(int i=0;i<32;i++)[result appendFormat:@"%C",[raw characterAtIndex:order[i]]];
+    return result;
+}
+static void BLSearch(NSString *term,NSInteger page,BLJSONCallback done){
+    BLRequest(@"https://api.bilibili.com/x/web-interface/nav",^(NSDictionary *nav,NSError *navError){
+        NSString *mixin=BLWBIKey(nav);
+        if(mixin.length==32){
+            long long now=(long long)[[NSDate date] timeIntervalSince1970];
+            NSString *params=[NSString stringWithFormat:@"keyword=%@&page=%ld&search_type=video&wts=%lld",
+              BLQueryEscape(term),(long)page,now];
+            NSString *signBase=[params stringByAppendingString:mixin];
+            const char *bytes=[signBase UTF8String];
+            unsigned char hash[CC_MD5_DIGEST_LENGTH];
+            CC_MD5(bytes,(CC_LONG)strlen(bytes),hash);
+            NSMutableString *signature=[NSMutableString string];
+            for(int i=0;i<CC_MD5_DIGEST_LENGTH;i++)[signature appendFormat:@"%02x",hash[i]];
+            NSString *url=[NSString stringWithFormat:@"https://api.bilibili.com/x/web-interface/wbi/search/type?%@&w_rid=%@",
+              params,signature];
+            BLRequest(url,^(NSDictionary *result,NSError *error){
+                if(!error && [result[@"code"] integerValue]==0 && [result[@"data"] isKindOfClass:[NSDictionary class]])done(result,nil);
+                else {
+                    // Older mirror endpoints may still be available on some networks.
+                    NSString *fallback=[NSString stringWithFormat:@"https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=%@&page=%ld",
+                       BLQueryEscape(term),(long)page];
+                    BLRequest(fallback,^(NSDictionary *old,NSError *legacyError){
+                        done([old[@"code"] integerValue]==0?old:result,legacyError?:error);
+                    });
+                }
+            });
+        }else{
+            NSString *fallback=[NSString stringWithFormat:@"https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=%@&page=%ld",
+               BLQueryEscape(term),(long)page];
+            BLRequest(fallback,done);
+        }
+    });
 }
 static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     view.image=nil;
@@ -381,7 +438,9 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
         NSString *encoded=[self.query stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
         url=[NSString stringWithFormat:@"https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=%@&page=%ld",encoded,(long)self.page];
     }
-    BLRequest(url,^(NSDictionary *json,NSError *error){
+    NSInteger requestedMode=self.mode,requestedPage=self.page;
+    BLJSONCallback completion=^(NSDictionary *json,NSError *error){
+        if(self.mode!=requestedMode || self.page!=requestedPage)return;
         self.loading=NO;[UIApplication sharedApplication].networkActivityIndicatorVisible=NO;
         [self.refreshControl endRefreshing];
         id data=json[@"data"];NSArray *rows=nil;
@@ -401,7 +460,9 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
         }
         self.items=list;[self.tableView reloadData];
         [self showMessage:list.count?@"":@"当前没有符合条件的视频"];
-    });
+    };
+    if(self.mode==1)BLSearch(self.query,self.page,completion);
+    else BLRequest(url,completion);
 }
 - (void)openByBV {
     UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"打开视频" message:@"输入 BV 号或完整视频链接" preferredStyle:UIAlertControllerStyleAlert];
