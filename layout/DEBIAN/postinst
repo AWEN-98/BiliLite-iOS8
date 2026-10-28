@@ -1,21 +1,20 @@
 #!/bin/sh
-# iOS 8 rootful app: make missing installation files visible as a real error.
+# Legacy iOS 8 registration with visible diagnostics for iFile/Cydia.
+APP=/Applications/BiliLite.app
 LOG=/var/mobile/Media/BiliLite-install.log
-if [ ! -d /Applications/BiliLite.app ] || [ ! -f /Applications/BiliLite.app/Info.plist ] || [ ! -x /Applications/BiliLite.app/BiliLite ]; then
-  echo "BiliLite 0.1.4 ERROR: missing application files at /Applications/BiliLite.app" >> "$LOG"
-  exit 1
+echo "BiliLite 0.1.5 post-install check" 
+if [ ! -d "$APP" ] || [ ! -f "$APP/Info.plist" ] || [ ! -x "$APP/BiliLite" ]; then
+    echo "ERROR: APP_FILES_MISSING at $APP" >&2
+    echo "APP_FILES_MISSING: $APP" >> "$LOG"
+    exit 1
 fi
-{
-  echo "BiliLite 0.1.4: application files installed correctly"
-  date
-  ls -ld /Applications/BiliLite.app
-  ls -l /Applications/BiliLite.app/BiliLite
-  if [ -x /usr/bin/uicache ]; then
-    /usr/bin/uicache
-    echo "uicache exit code: $?"
-  else
-    echo "uicache unavailable: SpringBoard cache may need a manual refresh"
-  fi
-  echo "Installation script finished"
-} >> "$LOG" 2>&1
+echo "APP_FILES_PRESENT: $APP" | tee -a "$LOG"
+if [ -x /usr/bin/uicache ]; then
+    /usr/bin/uicache >> "$LOG" 2>&1
+    CODE=$?
+    echo "UICACHE_EXIT=$CODE" | tee -a "$LOG"
+else
+    echo "UICACHE_NOT_FOUND: update UIKit Tools in Cydia if icons do not show" | tee -a "$LOG"
+fi
+echo "POSTINSTALL_COMPLETED" | tee -a "$LOG"
 exit 0

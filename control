@@ -1,8 +1,8 @@
 Package: com.finn.bililite
 Name: Bili Lite
-Version: 0.1.4
+Version: 0.1.5
 Architecture: iphoneos-arm
-Description: Lightweight Bilibili experiment for jailbroken iOS 8 (rootful)
+Description: Lightweight Bilibili client experiment for jailbroken iOS 8
 Maintainer: Finn
 Author: Finn
 Section: Multimedia

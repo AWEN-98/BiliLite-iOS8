@@ -36,7 +36,7 @@ jobs:
           set -euo pipefail
           DEB="$(find packages -maxdepth 1 -name '*.deb' -print -quit)"
           test -n "$DEB"
-          test "$(dpkg-deb -f "$DEB" Version)" = "0.1.4"
+          test "$(dpkg-deb -f "$DEB" Version)" = "0.1.5"
           test "$(dpkg-deb -f "$DEB" Architecture)" = "iphoneos-arm"
           ar t "$DEB" | grep -Fx "data.tar.gz"
           mkdir -p /tmp/bililite-install
@@ -45,6 +45,8 @@ jobs:
           test -x "$APP/BiliLite"
           test -s "$APP/Info.plist"
           test -s "$APP/Icon.png"
+          test -s "$APP/Icon@2x.png"
+          test -s "$APP/Default@2x.png"
           file "$APP/BiliLite"
           file "$APP/BiliLite" | grep -q "Mach-O armv7 executable"
           python3 - "$APP/Info.plist" <<'PYTEST'
@@ -53,14 +55,17 @@ jobs:
           assert p["CFBundleIdentifier"] == "com.finn.bililite", p
           assert p["CFBundleExecutable"] == "BiliLite", p
           assert p["MinimumOSVersion"] == "8.0", p
-          assert p["CFBundleShortVersionString"] == "0.1.4", p
+          assert p["CFBundleShortVersionString"] == "0.1.5", p
+          assert p["UIDeviceFamily"] == [1], p
+          assert p["CFBundleSignature"] == "????", p
+          assert p["CFBundleSupportedPlatforms"] == ["iPhoneOS"], p
           print("Bundle metadata verified for iOS 8")
           PYTEST
           mkdir -p /tmp/bililite-ipa/Payload
           cp -a "$APP" /tmp/bililite-ipa/Payload/BiliLite.app
-          (cd /tmp/bililite-ipa && zip -qr -X "$GITHUB_WORKSPACE/packages/BiliLite-iOS8-v0.1.4.ipa" Payload)
-          unzip -t packages/BiliLite-iOS8-v0.1.4.ipa | tail -1
-          unzip -Z1 packages/BiliLite-iOS8-v0.1.4.ipa | grep -Fx "Payload/BiliLite.app/Info.plist"
+          (cd /tmp/bililite-ipa && zip -qr -X "$GITHUB_WORKSPACE/packages/BiliLite-iOS8-v0.1.5.ipa" Payload)
+          unzip -t packages/BiliLite-iOS8-v0.1.5.ipa | tail -1
+          unzip -Z1 packages/BiliLite-iOS8-v0.1.5.ipa | grep -Fx "Payload/BiliLite.app/Info.plist"
           dpkg-deb -c "$DEB" | grep -F "Applications/BiliLite.app/Info.plist"
           dpkg-deb --ctrl-tarfile "$DEB" | tar -tf - | grep -F "postinst"
           echo "Both installable packaging formats verified."
@@ -68,7 +73,7 @@ jobs:
       - name: Upload iOS 8 install files
         uses: actions/upload-artifact@v4
         with:
-          name: BiliLite-iOS8-v0.1.4-DEB-IPA
+          name: BiliLite-iOS8-v0.1.5-DEB-IPA
           path: |
             packages/*.deb
             packages/*.ipa

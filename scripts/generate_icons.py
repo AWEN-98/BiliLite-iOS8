@@ -32,4 +32,6 @@ os.makedirs("Resources", exist_ok=True)
 for filename, size in (("Icon.png", 57), ("Icon@2x.png", 114), ("Icon-120.png", 120)):
     with open(os.path.join("Resources", filename), "wb") as file:
         file.write(png(size, size))
-print("Generated three PNG app icons for iOS 8")
+with open(os.path.join("Resources", "Default@2x.png"), "wb") as file:
+    file.write(png(640, 960))
+print("Generated three icons and an iPhone 4s launch screen")
