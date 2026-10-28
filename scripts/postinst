@@ -1,0 +1,14 @@
+#!/bin/sh
+# iOS 8 rootful SpringBoard app registration; never fail the package install.
+APP="/Applications/BiliLite.app"
+if [ -d "$APP" ]; then
+    chown -R 0:0 "$APP" >/dev/null 2>&1 || true
+    chmod 755 "$APP" "$APP/BiliLite" >/dev/null 2>&1 || true
+    chmod 644 "$APP/Info.plist" >/dev/null 2>&1 || true
+fi
+if [ -x /usr/bin/uicache ]; then
+    /usr/bin/uicache >/dev/null 2>&1 || true
+elif command -v uicache >/dev/null 2>&1; then
+    uicache >/dev/null 2>&1 || true
+fi
+exit 0
