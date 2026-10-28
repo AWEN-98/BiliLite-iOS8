@@ -26,7 +26,7 @@ jobs:
         run: |
           export THEOS="$HOME/theos"
           chmod +x layout/DEBIAN/postinst layout/DEBIAN/postrm
-          make package FINALPACKAGE=1
+          make package FINALPACKAGE=1 THEOS_PLATFORM_DEB_COMPRESSION_TYPE=gzip
       - name: Verify package layout
         run: |
           set -e
@@ -35,6 +35,24 @@ jobs:
           grep -q 'Applications/BiliLite.app/BiliLite' /tmp/package-tree.txt
           grep -q 'Applications/BiliLite.app/Icon.png' /tmp/package-tree.txt
           dpkg-deb --ctrl-tarfile "$DEB" | tar -tvf -
+          ar t "$DEB" | tee /tmp/deb-members.txt
+          grep -q '^data.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BiliLite-iOS8-deb
+          path: packages/*.deb
+          if-no-files-found: error
+ /tmp/deb-members.txt
+          dpkg-deb -f "$DEB" Version | grep -q '^0.1.2
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BiliLite-iOS8-deb
+          path: packages/*.deb
+          if-no-files-found: error
+
+          dpkg-deb --ctrl-tarfile "$DEB" | tar -xf - ./postinst -O | grep -q 'BiliLite-install.log'
 
       - uses: actions/upload-artifact@v4
         with:
