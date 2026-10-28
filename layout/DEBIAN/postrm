@@ -1,0 +1,5 @@
+#!/bin/sh
+if [ -x /usr/bin/uicache ]; then
+  /usr/bin/uicache >/dev/null 2>&1 || true
+fi
+exit 0
