@@ -1,61 +1,67 @@
-name: Build iOS 8 deb
+name: Build Bili Lite legacy iOS 8
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
 jobs:
-  package:
+  build:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - name: Install requirements
-        run: sudo apt-get update && sudo apt-get install -y git curl make clang lld unzip xz-utils ca-certificates libarchive-tools
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      - name: Install build requirements
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl make clang lld unzip zip xz-utils ca-certificates libarchive-tools dpkg-dev binutils python3
       - name: Install Theos
         run: |
           export THEOS="$HOME/theos"
           bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
-      - name: Install iOS 10.3 SDK
+      - name: Install iOS 10.3 SDK (armv7 capable)
         run: |
           mkdir -p "$HOME/theos/sdks"
           git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/bili-sdks
           git -C /tmp/bili-sdks sparse-checkout set iPhoneOS10.3.sdk
           cp -a /tmp/bili-sdks/iPhoneOS10.3.sdk "$HOME/theos/sdks/"
-      - name: Generate icons
+      - name: Create legacy app icons
         run: python3 scripts/generate_icons.py
-      - name: Build
+      - name: Build rootful package with gzip data
         run: |
           export THEOS="$HOME/theos"
           chmod +x layout/DEBIAN/postinst layout/DEBIAN/postrm
-          make package FINALPACKAGE=1 THEOS_PLATFORM_DEB_COMPRESSION_TYPE=gzip
-      - name: Verify package layout
+          make clean package FINALPACKAGE=1 THEOS_PLATFORM_DEB_COMPRESSION_TYPE=gzip
+      - name: Verify deb paths and legacy compression
         run: |
-          set -e
-          DEB=$(find packages -name '*.deb' | head -1)
-          dpkg-deb -c "$DEB" | tee /tmp/package-tree.txt
-          grep -q 'Applications/BiliLite.app/BiliLite' /tmp/package-tree.txt
-          grep -q 'Applications/BiliLite.app/Icon.png' /tmp/package-tree.txt
-          dpkg-deb --ctrl-tarfile "$DEB" | tar -tvf -
-          ar t "$DEB" | tee /tmp/deb-members.txt
-          grep -q '^data.tar.gz
-
-      - uses: actions/upload-artifact@v4
+          set -euo pipefail
+          DEB="$(find packages -maxdepth 1 -name '*.deb' -print -quit)"
+          test -n "$DEB"
+          echo "Package: $DEB"
+          dpkg-deb -f "$DEB"
+          dpkg-deb -c "$DEB"
+          ar t "$DEB"
+          dpkg-deb -c "$DEB" | grep -F "Applications/BiliLite.app/BiliLite"
+          dpkg-deb -c "$DEB" | grep -F "Applications/BiliLite.app/Info.plist"
+          dpkg-deb -c "$DEB" | grep -F "Applications/BiliLite.app/Icon.png"
+          ar t "$DEB" | grep -Fx "data.tar.gz"
+          test "$(dpkg-deb -f "$DEB" Version)" = "0.1.3"
+          test "$(dpkg-deb -f "$DEB" Architecture)" = "iphoneos-arm"
+          dpkg-deb --ctrl-tarfile "$DEB" | tar -tf - | grep -F "postinst"
+          mkdir -p /tmp/bililite-deb-contents
+          dpkg-deb -x "$DEB" /tmp/bililite-deb-contents
+          test -x /tmp/bililite-deb-contents/Applications/BiliLite.app/BiliLite
+          grep -q com.finn.bililite /tmp/bililite-deb-contents/Applications/BiliLite.app/Info.plist
+          (
+            cd /tmp/bililite-deb-contents/Applications
+            zip -r -q "$GITHUB_WORKSPACE/packages/BiliLite-app-manual-0.1.3.zip" BiliLite.app
+          )
+          echo "Verified: gzip deb, rootful /Applications path and standalone app ZIP"
+          sha256sum packages/*.deb
+      - name: Upload installable packages
+        uses: actions/upload-artifact@v4
         with:
-          name: BiliLite-iOS8-deb
-          path: packages/*.deb
-          if-no-files-found: error
- /tmp/deb-members.txt
-          dpkg-deb -f "$DEB" Version | grep -q '^0.1.2
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: BiliLite-iOS8-deb
-          path: packages/*.deb
-          if-no-files-found: error
-
-          dpkg-deb --ctrl-tarfile "$DEB" | tar -xf - ./postinst -O | grep -q 'BiliLite-install.log'
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: BiliLite-iOS8-deb
-          path: packages/*.deb
+          name: BiliLite-iOS8-v0.1.3
+          path: |
+            packages/*.deb
+            packages/BiliLite-app-manual-0.1.3.zip
           if-no-files-found: error
