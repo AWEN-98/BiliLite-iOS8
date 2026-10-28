@@ -165,6 +165,9 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
 
 @interface BLPlayerController : MPMoviePlayerViewController
 @property(nonatomic,strong) UIButton *speedButton;
+@property(nonatomic,strong) UILabel *liveBadge;
+@property(nonatomic,assign) BOOL liveStream;
+@property(nonatomic,assign) BOOL speedControlVisible;
 @property(nonatomic,assign) float preferredRate;
 @property(nonatomic,copy) NSString *videoKey;
 @property(nonatomic,assign) NSTimeInterval resumeAt;
@@ -179,18 +182,36 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     self.moviePlayer.controlStyle=MPMovieControlStyleFullscreen;
     self.moviePlayer.shouldAutoplay=YES;
     [self.moviePlayer setFullscreen:YES animated:NO];
-    UILongPressGestureRecognizer *hold=[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(holdToSpeed:)];
-    hold.minimumPressDuration=.38;hold.cancelsTouchesInView=NO;
-    [self.moviePlayer.view addGestureRecognizer:hold];
-    UIButton *speed=[UIButton buttonWithType:UIButtonTypeCustom];
-    speed.frame=CGRectMake(9,43,82,33);
-    speed.autoresizingMask=UIViewAutoresizingFlexibleRightMargin|UIViewAutoresizingFlexibleBottomMargin;
-    speed.backgroundColor=[UIColor colorWithWhite:0 alpha:.60];
-    speed.layer.cornerRadius=8;speed.titleLabel.font=[UIFont boldSystemFontOfSize:12];
-    [speed setTitle:@"倍速 1.0×" forState:UIControlStateNormal];
-    [speed addTarget:self action:@selector(changeSpeed) forControlEvents:UIControlEventTouchUpInside];
-    [self.moviePlayer.view addSubview:speed];
-    self.speedButton=speed;
+    if(self.liveStream){
+        UILabel *badge=[[UILabel alloc] initWithFrame:CGRectMake(0,0,73,28)];
+        badge.text=@"● 直播中";badge.textAlignment=NSTextAlignmentCenter;
+        badge.textColor=[UIColor whiteColor];
+        badge.font=[UIFont boldSystemFontOfSize:12];
+        badge.layer.cornerRadius=7;badge.clipsToBounds=YES;
+        badge.backgroundColor=[UIColor colorWithRed:.86 green:.20 blue:.30 alpha:.86];
+        badge.userInteractionEnabled=NO;
+        [self.moviePlayer.view addSubview:badge];self.liveBadge=badge;
+    }else{
+        UILongPressGestureRecognizer *hold=[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(holdToSpeed:)];
+        hold.minimumPressDuration=.42;hold.cancelsTouchesInView=NO;
+        [self.moviePlayer.view addGestureRecognizer:hold];
+        UITapGestureRecognizer *tap=[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(playerTapped:)];
+        tap.cancelsTouchesInView=NO;tap.delegate=nil;
+        [self.moviePlayer.view addGestureRecognizer:tap];
+        UIButton *speed=[UIButton buttonWithType:UIButtonTypeCustom];
+        speed.frame=CGRectMake(0,0,88,34);
+        speed.backgroundColor=[UIColor colorWithRed:.10 green:.12 blue:.17 alpha:.84];
+        speed.layer.cornerRadius=17;
+        speed.layer.borderWidth=.5;
+        speed.layer.borderColor=[UIColor colorWithWhite:1 alpha:.25].CGColor;
+        speed.titleLabel.font=[UIFont boldSystemFontOfSize:12];
+        [speed setTitle:@"倍速 1.0×" forState:UIControlStateNormal];
+        [speed addTarget:self action:@selector(changeSpeed) forControlEvents:UIControlEventTouchUpInside];
+        [self.moviePlayer.view addSubview:speed];
+        self.speedButton=speed;
+        speed.alpha=0;speed.userInteractionEnabled=NO;
+    }
+    [self positionPlayerOverlay];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playbackChanged:)
       name:MPMoviePlayerPlaybackStateDidChangeNotification object:self.moviePlayer];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(movieLoaded:)
@@ -200,7 +221,36 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     self.saveTimer=[NSTimer scheduledTimerWithTimeInterval:8 target:self selector:@selector(savePosition)
        userInfo:nil repeats:YES];
 }
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self positionPlayerOverlay];
+}
+- (void)positionPlayerOverlay {
+    CGRect b=self.moviePlayer.view.bounds;
+    if(b.size.width<1 || b.size.height<1)return;
+    if(self.liveBadge)self.liveBadge.frame=CGRectMake(MAX(8,b.size.width-87),12,73,28);
+    if(self.speedButton)self.speedButton.frame=CGRectMake(MAX(8,b.size.width-104),MAX(42,b.size.height-116),88,34);
+}
+- (void)playerTapped:(UITapGestureRecognizer *)gesture {
+    if(gesture.state!=UIGestureRecognizerStateEnded || self.liveStream)return;
+    [self revealSpeedControl];
+}
+- (void)revealSpeedControl {
+    if(self.liveStream || !self.speedButton)return;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hideSpeedControl) object:nil];
+    self.speedControlVisible=YES;self.speedButton.userInteractionEnabled=YES;
+    [UIView animateWithDuration:.18 animations:^{self.speedButton.alpha=1;}];
+    [self performSelector:@selector(hideSpeedControl) withObject:nil afterDelay:3.2];
+}
+- (void)hideSpeedControl {
+    if(self.holdingSpeed)return;
+    self.speedControlVisible=NO;
+    [UIView animateWithDuration:.22 animations:^{self.speedButton.alpha=0;} completion:^(BOOL finished){
+        if(!self.speedControlVisible)self.speedButton.userInteractionEnabled=NO;
+    }];
+}
 - (void)viewWillDisappear:(BOOL)animated {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hideSpeedControl) object:nil];
     [self savePosition];
     [super viewWillDisappear:animated];
 }
@@ -240,19 +290,23 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     }
 }
 - (void)playbackChanged:(NSNotification *)note {
-    if(self.moviePlayer.playbackState==MPMoviePlaybackStatePlaying)
+    if(!self.liveStream && self.moviePlayer.playbackState==MPMoviePlaybackStatePlaying)
         self.moviePlayer.currentPlaybackRate=self.holdingSpeed?2.0f:self.preferredRate;
 }
 - (void)changeSpeed {
+    if(self.liveStream)return;
     NSArray *speeds=@[@1.0,@1.25,@1.5,@2.0,@0.75];
     NSUInteger index=0;
     for(NSUInteger i=0;i<speeds.count;i++)if(fabsf([speeds[i] floatValue]-self.preferredRate)<.01){index=i;break;}
     self.preferredRate=[speeds[(index+1<speeds.count)?index+1:0] floatValue];
     self.moviePlayer.currentPlaybackRate=self.preferredRate;
     [self.speedButton setTitle:[NSString stringWithFormat:@"倍速 %.2g×",self.preferredRate] forState:UIControlStateNormal];
+    [self revealSpeedControl];
 }
 - (void)holdToSpeed:(UILongPressGestureRecognizer *)gesture {
+    if(self.liveStream)return;
     if(gesture.state==UIGestureRecognizerStateBegan) {
+        [self revealSpeedControl];
         self.holdingSpeed=YES;
         self.moviePlayer.currentPlaybackRate=2.0f;
         [self.speedButton setTitle:@"按住 2×" forState:UIControlStateNormal];
@@ -260,6 +314,7 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
         self.holdingSpeed=NO;
         self.moviePlayer.currentPlaybackRate=self.preferredRate;
         [self.speedButton setTitle:[NSString stringWithFormat:@"倍速 %.2g×",self.preferredRate] forState:UIControlStateNormal];
+        [self revealSpeedControl];
     }
 }
 @end
