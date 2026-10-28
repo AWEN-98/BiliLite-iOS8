@@ -1130,13 +1130,13 @@ static NSString *BLHLS(NSDictionary *json){
     [self.qrView addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(showLargeQR)]];
     [scroll addSubview:self.qrView];
     CGFloat y=qrY+side+6;
-    self.status=[[UILabel alloc] initWithFrame:CGRectMake(12,y,w-24,40)];
+    self.status=[[UILabel alloc] initWithFrame:CGRectMake(12,y,w-24,64)];
     self.status.textColor=BLInk();
     self.status.textAlignment=NSTextAlignmentCenter;
-    self.status.numberOfLines=2;
-    self.status.font=[UIFont boldSystemFontOfSize:13];
+    self.status.numberOfLines=0;
+    self.status.font=[UIFont boldSystemFontOfSize:12];
     [scroll addSubview:self.status];
-    y+=47;
+    y+=70;
     self.reloadButton=[UIButton buttonWithType:UIButtonTypeCustom];
     self.reloadButton.frame=CGRectMake(16,y,w-32,40);
     [self.reloadButton setTitle:@"生成登录二维码" forState:UIControlStateNormal];
