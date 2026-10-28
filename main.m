@@ -90,6 +90,13 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
         if(err||data.length>550000||!data.length)return;
         UIImage *image=[UIImage imageWithData:data];
         if(!image)return;
+        // Decode the full source only briefly, then cache a small thumbnail.
+        UIGraphicsBeginImageContextWithOptions(CGSizeMake(130,84),YES,1.0);
+        [image drawInRect:CGRectMake(0,0,130,84)];
+        UIImage *small=UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        if(!small)return;
+        image=small;
         [cache setObject:image forKey:address];
         dispatch_async(dispatch_get_main_queue(),^{
             if([view.accessibilityIdentifier isEqualToString:address])view.image=image;
@@ -454,7 +461,7 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     self.window.rootViewController=navigation;[self.window makeKeyAndVisible];
     return YES;
 }
-- (NSUInteger)application:(UIApplication *)app supportedInterfaceOrientationsForWindow:(UIWindow *)window {
+- (UIInterfaceOrientationMask)application:(UIApplication *)app supportedInterfaceOrientationsForWindow:(UIWindow *)window {
     return UIInterfaceOrientationMaskAllButUpsideDown;
 }
 @end
