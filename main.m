@@ -1031,6 +1031,7 @@ static NSString *BLHLS(NSDictionary *json){
 
 @interface BLQRLoginController : UIViewController
 @property(nonatomic,strong) UIScrollView *scroller;
+@property(nonatomic,strong) UIView *zoomOverlay;
 @property(nonatomic,strong) UIImageView *qrView;
 @property(nonatomic,strong) UILabel *status;
 @property(nonatomic,strong) UILabel *instructions;
@@ -1091,44 +1092,55 @@ static NSString *BLHLS(NSDictionary *json){
     self.instructions.textColor=[UIColor grayColor];
     [scroll addSubview:self.instructions];
     scroll.contentSize=CGSizeMake(w,MAX(y+82,h+8));
-    [self generateQR];
+    // Request QR after this controller appears in the navigation hierarchy.
 }
 - (void)showLargeQR {
-    if(!self.qrView.image)return;
-    UIViewController *large=[UIViewController new];
-    large.view.backgroundColor=[UIColor colorWithRed:.10 green:.11 blue:.15 alpha:1];
-    CGFloat w=large.view.bounds.size.width;
-    CGFloat side=MIN(304.0f,MAX(1,w-16));
-    UIImageView *image=[[UIImageView alloc] initWithFrame:CGRectMake(floorf((w-side)/2),MAX(38,(large.view.bounds.size.height-side)/2-18),side,side)];
+    if(!self.qrView.image || self.zoomOverlay)return;
+    // Keep QR polling running: presenting a full-screen controller would
+    // trigger viewWillDisappear, cancelling this live login session.
+    UIView *host=self.navigationController.view?:self.view;
+    UIView *overlay=[[UIView alloc] initWithFrame:host.bounds];
+    overlay.backgroundColor=[UIColor colorWithRed:.10 green:.11 blue:.15 alpha:1];
+    overlay.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    CGFloat w=overlay.bounds.size.width,h=overlay.bounds.size.height;
+    CGFloat side=MIN(304.0f,MAX(180,MIN(w-16,h-100)));
+    UIImageView *image=[[UIImageView alloc] initWithFrame:CGRectMake(floorf((w-side)/2),floorf((h-side)/2)-8,side,side)];
     image.image=self.qrView.image;
     image.backgroundColor=[UIColor whiteColor];
     image.contentMode=UIViewContentModeScaleAspectFit;
     image.autoresizingMask=UIViewAutoresizingFlexibleTopMargin|UIViewAutoresizingFlexibleBottomMargin|UIViewAutoresizingFlexibleLeftMargin|UIViewAutoresizingFlexibleRightMargin;
-    [large.view addSubview:image];
-    UILabel *hint=[[UILabel alloc] initWithFrame:CGRectMake(0,large.view.bounds.size.height-66,w,42)];
-    hint.text=@"点击屏幕返回扫码页面";
+    [overlay addSubview:image];
+    UILabel *hint=[[UILabel alloc] initWithFrame:CGRectMake(0,h-60,w,42)];
+    hint.text=@"轻点屏幕缩小二维码";
     hint.textAlignment=NSTextAlignmentCenter;
     hint.textColor=[UIColor whiteColor];
     hint.font=[UIFont systemFontOfSize:13];
-    hint.autoresizingMask=UIViewAutoresizingFlexibleTopMargin;
-    [large.view addSubview:hint];
+    hint.autoresizingMask=UIViewAutoresizingFlexibleTopMargin|UIViewAutoresizingFlexibleWidth;
+    [overlay addSubview:hint];
     UIButton *dismiss=[UIButton buttonWithType:UIButtonTypeCustom];
-    dismiss.frame=large.view.bounds;
+    dismiss.frame=overlay.bounds;
     dismiss.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
     [dismiss addTarget:self action:@selector(closeLargeQR) forControlEvents:UIControlEventTouchUpInside];
-    [large.view addSubview:dismiss];
-    [self presentViewController:large animated:YES completion:nil];
+    [overlay addSubview:dismiss];
+    [host addSubview:overlay];
+    self.zoomOverlay=overlay;
 }
 - (void)closeLargeQR {
-    [self dismissViewControllerAnimated:YES completion:nil];
+    [self.zoomOverlay removeFromSuperview];
+    self.zoomOverlay=nil;
+}
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if(!self.qrKey.length && !self.qrView.image && self.reloadButton.enabled) [self generateQR];
 }
 
 - (void)stopPolling {
     [self.timer invalidate];self.timer=nil;self.qrKey=nil;self.expiresAt=0;
 }
 - (void)viewWillDisappear:(BOOL)animated {
-    [super viewWillDisappear:animated];
+    [self closeLargeQR];
     [self stopPolling];
+    [super viewWillDisappear:animated];
 }
 - (void)dealloc {[self stopPolling];}
 - (void)generateQR {
