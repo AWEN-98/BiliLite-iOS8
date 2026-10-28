@@ -14,12 +14,12 @@ jobs:
         run: |
           export THEOS="$HOME/theos"
           bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
-      - name: Install iOS 9.3 SDK
+      - name: Install iOS 10.3 SDK
         run: |
           mkdir -p "$HOME/theos/sdks"
           git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/bili-sdks
-          git -C /tmp/bili-sdks sparse-checkout set iPhoneOS9.3.sdk
-          cp -a /tmp/bili-sdks/iPhoneOS9.3.sdk "$HOME/theos/sdks/"
+          git -C /tmp/bili-sdks sparse-checkout set iPhoneOS10.3.sdk
+          cp -a /tmp/bili-sdks/iPhoneOS10.3.sdk "$HOME/theos/sdks/"
       - name: Build
         run: |
           export THEOS="$HOME/theos"
