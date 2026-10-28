@@ -41,14 +41,22 @@ static NSArray *BLStored(NSString *key){
     id rows=[[NSUserDefaults standardUserDefaults] arrayForKey:key];
     return [rows isKindOfClass:[NSArray class]]?rows:@[];
 }
-static BOOL BLContains(NSString *key,NSString *bvid){
-    for(NSDictionary *v in BLStored(key))if([v[@"bvid"] isEqualToString:bvid])return YES;
+static NSString *BLIdentityKey(NSString *key){
+    return [key isEqualToString:@"bl_live_favorites_v1"]?@"roomid":@"bvid";
+}
+static BOOL BLContains(NSString *key,NSString *identifier){
+    NSString *field=BLIdentityKey(key);
+    if(!identifier.length)return NO;
+    for(NSDictionary *v in BLStored(key))if([BLString(v[field]) isEqualToString:identifier])return YES;
     return NO;
 }
 static void BLStore(NSString *key,NSDictionary *item,BOOL remove){
+    NSString *field=BLIdentityKey(key);
+    NSString *identifier=BLString(item[field]);
+    if(!identifier.length)return;
     NSMutableArray *list=[NSMutableArray array];
-    for(NSDictionary *v in BLStored(key))if(![v[@"bvid"] isEqualToString:item[@"bvid"]])[list addObject:v];
-    if(!remove && item[@"bvid"])[list insertObject:item atIndex:0];
+    for(NSDictionary *v in BLStored(key))if(![BLString(v[field]) isEqualToString:identifier])[list addObject:v];
+    if(!remove)[list insertObject:item atIndex:0];
     while(list.count>70)[list removeLastObject];
     [[NSUserDefaults standardUserDefaults] setObject:list forKey:key];
 }
@@ -173,6 +181,7 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
 @property(nonatomic,assign) NSTimeInterval resumeAt;
 @property(nonatomic,assign) BOOL didResume;
 @property(nonatomic,assign) BOOL holdingSpeed;
+@property(nonatomic,assign) BOOL completedPlayback;
 @property(nonatomic,strong) NSTimer *saveTimer;
 @end
 @implementation BLPlayerController
@@ -251,7 +260,7 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
 }
 - (void)viewWillDisappear:(BOOL)animated {
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hideSpeedControl) object:nil];
-    [self savePosition];
+    if(!self.completedPlayback)[self savePosition];
     [super viewWillDisappear:animated];
 }
 - (void)dealloc {
@@ -265,7 +274,7 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     }
 }
 - (void)savePosition {
-    if(!self.videoKey.length)return;
+    if(!self.videoKey.length || self.completedPlayback)return;
     NSTimeInterval seconds=self.moviePlayer.currentPlaybackTime;
     if(seconds<0 || isnan(seconds) || isinf(seconds))return;
     NSMutableDictionary *saved=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"bl_playback_positions"] mutableCopy]?:[NSMutableDictionary dictionary];
@@ -280,6 +289,7 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
 - (void)movieFinished:(NSNotification *)notification {
     NSInteger reason=[notification.userInfo[MPMoviePlayerPlaybackDidFinishReasonUserInfoKey] integerValue];
     if(reason==MPMovieFinishReasonPlaybackEnded){
+        self.completedPlayback=YES;
         if(self.videoKey.length){
             NSMutableDictionary *saved=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"bl_playback_positions"] mutableCopy]?:[NSMutableDictionary dictionary];
             [saved removeObjectForKey:self.videoKey];
