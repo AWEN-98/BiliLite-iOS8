@@ -20,10 +20,22 @@ jobs:
           git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/bili-sdks
           git -C /tmp/bili-sdks sparse-checkout set iPhoneOS10.3.sdk
           cp -a /tmp/bili-sdks/iPhoneOS10.3.sdk "$HOME/theos/sdks/"
+      - name: Generate icons
+        run: python3 scripts/generate_icons.py
       - name: Build
         run: |
           export THEOS="$HOME/theos"
+          chmod +x layout/DEBIAN/postinst layout/DEBIAN/postrm
           make package FINALPACKAGE=1
+      - name: Verify package layout
+        run: |
+          set -e
+          DEB=$(find packages -name '*.deb' | head -1)
+          dpkg-deb -c "$DEB" | tee /tmp/package-tree.txt
+          grep -q 'Applications/BiliLite.app/BiliLite' /tmp/package-tree.txt
+          grep -q 'Applications/BiliLite.app/Icon.png' /tmp/package-tree.txt
+          dpkg-deb --ctrl-tarfile "$DEB" | tar -tvf -
+
       - uses: actions/upload-artifact@v4
         with:
           name: BiliLite-iOS8-deb
