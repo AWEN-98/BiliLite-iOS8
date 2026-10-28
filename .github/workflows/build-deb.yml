@@ -54,6 +54,21 @@ jobs:
           test -s "$APP/Icon.png"
           test -s "$APP/Default@2x.png"
           file "$APP/BiliLite" | grep -F "Mach-O armv7 executable"
+          # Confirm the signed executable includes the exact Keychain group,
+          # not merely a plist placed next to the app binary.
+          SIGNER="$HOME/theos/toolchain/linux/iphone/bin/ldid"
+          test -x "$SIGNER"
+          "$SIGNER" -e "$APP/BiliLite" > /tmp/bililite-signed-entitlements.plist
+          grep -q 'keychain-access-groups' /tmp/bililite-signed-entitlements.plist
+          grep -q 'com.finn.bililite' /tmp/bililite-signed-entitlements.plist
+          python3 - <<'PYENTS'
+          import plistlib
+          with open('/tmp/bililite-signed-entitlements.plist','rb') as f:
+              values=plistlib.load(f)
+          assert 'com.finn.bililite' in values['keychain-access-groups']
+          assert values['application-identifier']=='com.finn.bililite'
+          print('Verified embedded keychain signing entitlements')
+          PYENTS
           python3 - "$APP/Info.plist" <<'PYTEST'
           import plistlib, sys
           with open(sys.argv[1], "rb") as f:
