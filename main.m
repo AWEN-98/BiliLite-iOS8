@@ -33,7 +33,7 @@ static NSMutableDictionary *BLNormalize(NSDictionary *d){
     NSDictionary *stat=[d[@"stat"] isKindOfClass:[NSDictionary class]]?d[@"stat"]:@{};
     return [@{@"bvid":bvid,@"title":BLTitle(BLString(d[@"title"])),
        @"pic":[BLString(d[@"pic"]) hasPrefix:@"//"]?[@"https:" stringByAppendingString:BLString(d[@"pic"])]:BLString(d[@"pic"]),@"author":BLString(d[@"author"]).length?BLString(d[@"author"]):BLString(owner[@"name"]),
-       @"desc":BLString(d[@"desc"]),@"cid":BLString(d[@"cid"]),
+       @"desc":BLString(d[@"desc"]),@"cid":BLString(d[@"cid"]),@"aid":BLString(d[@"aid"]),
        @"duration":BLString(d[@"duration"]),@"view":BLString(d[@"play"]).length?BLString(d[@"play"]):BLString(stat[@"view"]),
        @"like":BLString(stat[@"like"]),@"favorite":BLString(stat[@"favorite"])} mutableCopy];
 }
@@ -166,6 +166,11 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
 @interface BLPlayerController : MPMoviePlayerViewController
 @property(nonatomic,strong) UIButton *speedButton;
 @property(nonatomic,assign) float preferredRate;
+@property(nonatomic,copy) NSString *videoKey;
+@property(nonatomic,assign) NSTimeInterval resumeAt;
+@property(nonatomic,assign) BOOL didResume;
+@property(nonatomic,assign) BOOL holdingSpeed;
+@property(nonatomic,strong) NSTimer *saveTimer;
 @end
 @implementation BLPlayerController
 - (void)viewDidLoad {
@@ -188,13 +193,55 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     self.speedButton=speed;
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playbackChanged:)
       name:MPMoviePlayerPlaybackStateDidChangeNotification object:self.moviePlayer];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(movieLoaded:)
+      name:MPMoviePlayerLoadStateDidChangeNotification object:self.moviePlayer];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(movieFinished:)
+      name:MPMoviePlayerPlaybackDidFinishNotification object:self.moviePlayer];
+    self.saveTimer=[NSTimer scheduledTimerWithTimeInterval:8 target:self selector:@selector(savePosition)
+       userInfo:nil repeats:YES];
+}
+- (void)viewWillDisappear:(BOOL)animated {
+    [self savePosition];
+    [super viewWillDisappear:animated];
 }
 - (void)dealloc {
+    [self.saveTimer invalidate];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
+- (void)movieLoaded:(NSNotification *)notification {
+    if(!self.didResume && self.resumeAt>5 && (self.moviePlayer.loadState&MPMovieLoadStatePlayable)){
+        self.didResume=YES;
+        self.moviePlayer.currentPlaybackTime=self.resumeAt;
+    }
+}
+- (void)savePosition {
+    if(!self.videoKey.length)return;
+    NSTimeInterval seconds=self.moviePlayer.currentPlaybackTime;
+    if(seconds<0 || isnan(seconds) || isinf(seconds))return;
+    NSMutableDictionary *saved=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"bl_playback_positions"] mutableCopy]?:[NSMutableDictionary dictionary];
+    if(saved.count>100){
+        for(NSString *key in [[saved allKeys] subarrayWithRange:NSMakeRange(0,20)]) [saved removeObjectForKey:key];
+    }
+    NSTimeInterval duration=self.moviePlayer.duration;
+    if(duration>0 && seconds>duration-12) [saved removeObjectForKey:self.videoKey];
+    else saved[self.videoKey]=@(seconds);
+    [[NSUserDefaults standardUserDefaults] setObject:saved forKey:@"bl_playback_positions"];
+}
+- (void)movieFinished:(NSNotification *)notification {
+    NSInteger reason=[notification.userInfo[MPMoviePlayerPlaybackDidFinishReasonUserInfoKey] integerValue];
+    if(reason==MPMovieFinishReasonPlaybackEnded){
+        if(self.videoKey.length){
+            NSMutableDictionary *saved=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"bl_playback_positions"] mutableCopy]?:[NSMutableDictionary dictionary];
+            [saved removeObjectForKey:self.videoKey];
+            [[NSUserDefaults standardUserDefaults] setObject:saved forKey:@"bl_playback_positions"];
+        }
+    }else if(reason==MPMovieFinishReasonPlaybackError){
+        BLAlert(self,@"视频播放失败",@"当前视频地址可能已过期、不支持该编码，或 B 站要求额外鉴权。可以尝试其他清晰度或分P。");
+    }
+}
 - (void)playbackChanged:(NSNotification *)note {
-    if(self.moviePlayer.playbackState==MPMoviePlaybackStatePlaying && self.preferredRate!=1.0f)
-        self.moviePlayer.currentPlaybackRate=self.preferredRate;
+    if(self.moviePlayer.playbackState==MPMoviePlaybackStatePlaying)
+        self.moviePlayer.currentPlaybackRate=self.holdingSpeed?2.0f:self.preferredRate;
 }
 - (void)changeSpeed {
     NSArray *speeds=@[@1.0,@1.25,@1.5,@2.0,@0.75];
@@ -206,12 +253,74 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
 }
 - (void)holdToSpeed:(UILongPressGestureRecognizer *)gesture {
     if(gesture.state==UIGestureRecognizerStateBegan) {
+        self.holdingSpeed=YES;
         self.moviePlayer.currentPlaybackRate=2.0f;
         [self.speedButton setTitle:@"按住 2×" forState:UIControlStateNormal];
     }else if(gesture.state==UIGestureRecognizerStateEnded || gesture.state==UIGestureRecognizerStateCancelled || gesture.state==UIGestureRecognizerStateFailed){
+        self.holdingSpeed=NO;
         self.moviePlayer.currentPlaybackRate=self.preferredRate;
         [self.speedButton setTitle:[NSString stringWithFormat:@"倍速 %.2g×",self.preferredRate] forState:UIControlStateNormal];
     }
+}
+@end
+
+
+@interface BLCommentsController : UITableViewController
+@property(nonatomic,copy) NSString *aid;
+@property(nonatomic,strong) NSArray *comments;
+@property(nonatomic,assign) NSInteger page;
+@property(nonatomic,assign) BOOL loading;
+@end
+@implementation BLCommentsController
+- (instancetype)initWithAid:(NSString *)aid {
+    if((self=[super initWithStyle:UITableViewStylePlain])){self.aid=aid;self.comments=@[];self.page=1;}
+    return self;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];self.title=@"视频评论（只读）";
+    self.tableView.backgroundColor=BLBg();
+    self.tableView.rowHeight=UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight=90;
+    UIButton *more=[UIButton buttonWithType:UIButtonTypeSystem];more.frame=CGRectMake(12,4,self.view.bounds.size.width-24,42);
+    [more setTitle:@"加载更多评论" forState:UIControlStateNormal];
+    [more addTarget:self action:@selector(loadNext) forControlEvents:UIControlEventTouchUpInside];
+    UIView *foot=[[UIView alloc] initWithFrame:CGRectMake(0,0,self.view.bounds.size.width,55)];
+    [foot addSubview:more];self.tableView.tableFooterView=foot;
+    [self loadNext];
+}
+- (void)loadNext {
+    if(self.loading||!self.aid.length)return;
+    self.loading=YES;
+    NSString *url=[NSString stringWithFormat:@"https://api.bilibili.com/x/v2/reply?type=1&oid=%@&pn=%ld&ps=15&sort=2",self.aid,(long)self.page];
+    BLRequest(url,^(NSDictionary *json,NSError *err){
+        self.loading=NO;
+        NSDictionary *data=[json[@"data"] isKindOfClass:[NSDictionary class]]?json[@"data"]:@{};
+        NSArray *rows=[data[@"replies"] isKindOfClass:[NSArray class]]?data[@"replies"]:@[];
+        if(err || [json[@"code"] integerValue]!=0){
+            BLAlert(self,@"评论暂不可用",[NSString stringWithFormat:@"%@\n有些评论需要登录或 B 站验证码。",BLFailure(json,err)]);return;
+        }
+        if(!rows.count){if(!self.comments.count)BLAlert(self,@"没有评论",@"该视频可能关闭了评论，或接口没有提供公开评论。");return;}
+        NSMutableArray *items=[self.comments mutableCopy];
+        for(NSDictionary *v in rows){
+            NSDictionary *member=[v[@"member"] isKindOfClass:[NSDictionary class]]?v[@"member"]:@{};
+            NSDictionary *content=[v[@"content"] isKindOfClass:[NSDictionary class]]?v[@"content"]:@{};
+            NSString *name=BLString(member[@"uname"]),*comment=BLString(content[@"message"]);
+            if(comment.length)[items addObject:@{@"name":name,@"text":comment}];
+        }
+        self.comments=items;self.page++;[self.tableView reloadData];
+    });
+}
+- (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section{return self.comments.count;}
+- (UITableViewCell *)tableView:(UITableView *)table cellForRowAtIndexPath:(NSIndexPath *)index {
+    UITableViewCell *cell=[table dequeueReusableCellWithIdentifier:@"comment"];
+    if(!cell)cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"comment"];
+    NSDictionary *item=self.comments[index.row];
+    cell.backgroundColor=[UIColor whiteColor];
+    cell.textLabel.text=item[@"name"];cell.textLabel.textColor=BLPink();
+    cell.textLabel.font=[UIFont boldSystemFontOfSize:12];
+    cell.detailTextLabel.text=item[@"text"];cell.detailTextLabel.numberOfLines=0;
+    cell.detailTextLabel.font=[UIFont systemFontOfSize:13];
+    return cell;
 }
 @end
 
@@ -228,10 +337,15 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
 @property(nonatomic,strong) NSCache *imageCache;
 @property(nonatomic,strong) BLPlayerController *player;
 @property(nonatomic,strong) UIScrollView *scroll;
+@property(nonatomic,strong) UIButton *partButton;
+@property(nonatomic,strong) UIButton *qualityButton;
+@property(nonatomic,strong) NSArray *parts;
+@property(nonatomic,copy) NSString *selectedCID;
+@property(nonatomic,assign) NSInteger quality;
 @end
 @implementation BLDetailController
 - (instancetype)initWithVideo:(NSDictionary *)video {
-    if((self=[super init])){self.video=video?:@{};self.related=@[];self.imageCache=[NSCache new];self.imageCache.countLimit=15;}
+    if((self=[super init])){self.video=video?:@{};self.related=@[];self.parts=@[];self.quality=16;self.selectedCID=BLString(video[@"cid"]);self.imageCache=[NSCache new];self.imageCache.countLimit=15;}
     return self;
 }
 - (UIButton *)button:(NSString *)title x:(CGFloat)x y:(CGFloat)y w:(CGFloat)w action:(SEL)action {
@@ -246,7 +360,7 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     CGFloat w=self.view.bounds.size.width;
     self.scroll=[[UIScrollView alloc] initWithFrame:self.view.bounds];
     self.scroll.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-    [self.view addSubview:self.scroll];self.scroll.contentSize=CGSizeMake(w,700);
+    [self.view addSubview:self.scroll];self.scroll.contentSize=CGSizeMake(w,765);
     self.cover=[[UIImageView alloc] initWithFrame:CGRectMake(12,10,w-24,153)];
     self.cover.backgroundColor=[UIColor colorWithWhite:.88 alpha:1];
     self.cover.contentMode=UIViewContentModeScaleAspectFit;[self.scroll addSubview:self.cover];
@@ -263,10 +377,13 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     self.descriptionBox.editable=NO;self.descriptionBox.font=[UIFont systemFontOfSize:12];
     self.descriptionBox.textColor=BLInk();self.descriptionBox.backgroundColor=[UIColor whiteColor];
     self.descriptionBox.layer.cornerRadius=8;[self.scroll addSubview:self.descriptionBox];
-    UILabel *relatedLabel=[[UILabel alloc] initWithFrame:CGRectMake(12,425,w-24,30)];
+    self.partButton=[self button:@"选集 P1" x:12 y:420 w:90 action:@selector(choosePart)];
+    self.qualityButton=[self button:@"清晰度 360P" x:107 y:420 w:107 action:@selector(chooseQuality)];
+    [self button:@"评论" x:219 y:420 w:w-231 action:@selector(openComments)];
+    UILabel *relatedLabel=[[UILabel alloc] initWithFrame:CGRectMake(12,468,w-24,30)];
     relatedLabel.text=@"相关推荐";relatedLabel.font=[UIFont boldSystemFontOfSize:17];
     relatedLabel.textColor=BLInk();[self.scroll addSubview:relatedLabel];
-    self.relatedTable=[[UITableView alloc] initWithFrame:CGRectMake(10,462,w-20,233) style:UITableViewStylePlain];
+    self.relatedTable=[[UITableView alloc] initWithFrame:CGRectMake(10,505,w-20,233) style:UITableViewStylePlain];
     self.relatedTable.dataSource=self;self.relatedTable.delegate=self;
     self.relatedTable.rowHeight=57;self.relatedTable.scrollEnabled=NO;
     self.relatedTable.layer.cornerRadius=8;[self.scroll addSubview:self.relatedTable];
@@ -278,6 +395,11 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     self.meta.text=[NSString stringWithFormat:@"UP：%@   播放：%@\nBV：%@",self.video[@"author"]?:@"",self.video[@"view"]?:@"",bvid];
     self.descriptionBox.text=BLString(self.video[@"desc"]).length?self.video[@"desc"]:@"视频简介正在加载…";
     [self.favoriteButton setTitle:BLContains(@"bl_favorites_v1",bvid)?@"★ 已收藏":@"☆ 收藏" forState:UIControlStateNormal];
+    if(self.partButton){
+        NSUInteger index=0;
+        for(NSUInteger i=0;i<self.parts.count;i++)if([BLString(self.parts[i][@"cid"]) isEqualToString:self.selectedCID]){index=i;break;}
+        [self.partButton setTitle:[NSString stringWithFormat:@"选集 P%lu",(unsigned long)(index+1)] forState:UIControlStateNormal];
+    }
     BLFetchImage(BLString(self.video[@"pic"]),self.cover,self.imageCache);
 }
 - (void)loadDetails {
@@ -286,7 +408,15 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
         NSDictionary *data=json[@"data"];
         if([data isKindOfClass:[NSDictionary class]] && [json[@"code"] integerValue]==0){
             NSMutableDictionary *full=BLNormalize(data);
-            if(full){self.video=full;[self render];}
+            if(full){
+                self.video=full;
+                self.parts=[data[@"pages"] isKindOfClass:[NSArray class]]?data[@"pages"]:@[];
+                // A saved CID may represent P2 or later; preserve it only when present.
+                BOOL valid=NO;
+                for(NSDictionary *part in self.parts)if([BLString(part[@"cid"]) isEqualToString:self.selectedCID]){valid=YES;break;}
+                if(!valid)self.selectedCID=BLString(data[@"cid"]);
+                [self render];
+            }
         }else self.descriptionBox.text=[NSString stringWithFormat:@"简介不可用：%@",BLFailure(json,error)];
     });
     BLRequest([NSString stringWithFormat:@"https://api.bilibili.com/x/web-interface/archive/related?bvid=%@",bvid],^(NSDictionary *json,NSError *err){
@@ -305,11 +435,58 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     [UIPasteboard generalPasteboard].string=[@"https://www.bilibili.com/video/" stringByAppendingString:BLString(self.video[@"bvid"])];
     BLAlert(self,@"已复制",@"可以把视频链接粘贴到其他软件。");
 }
+- (void)choosePart {
+    if(!self.parts.count){BLAlert(self,@"暂无分P信息",@"请检查视频详情是否加载成功。");return;}
+    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"选择分P" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    // Limit each action sheet to 30 entries so it is usable on 3.5-inch iPhone screens.
+    NSUInteger currentIndex=0;
+    for(NSUInteger i=0;i<self.parts.count;i++)if([BLString(self.parts[i][@"cid"]) isEqualToString:self.selectedCID]){currentIndex=i;break;}
+    NSUInteger begin=(currentIndex/30)*30;
+    [self fillPartMenu:menu start:begin];
+    [self presentViewController:menu animated:YES completion:nil];
+}
+- (void)fillPartMenu:(UIAlertController *)menu start:(NSUInteger)begin {
+    NSUInteger end=MIN(self.parts.count,begin+30);
+    for(NSUInteger i=begin;i<end;i++){
+        NSDictionary *part=self.parts[i];
+        NSString *label=[NSString stringWithFormat:@"P%lu  %@",(unsigned long)(i+1),BLString(part[@"part"])];
+        NSString *cid=BLString(part[@"cid"]);
+        [menu addAction:[UIAlertAction actionWithTitle:label style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+            self.selectedCID=cid;[self render];
+        }]];
+    }
+    if(end<self.parts.count)[menu addAction:[UIAlertAction actionWithTitle:@"更多分P…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+        UIAlertController *next=[UIAlertController alertControllerWithTitle:@"选择分P" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+        [self fillPartMenu:next start:end];[self presentViewController:next animated:YES completion:nil];
+    }]];
+    if(begin>0)[menu addAction:[UIAlertAction actionWithTitle:@"上一组分P" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+        UIAlertController *prev=[UIAlertController alertControllerWithTitle:@"选择分P" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+        [self fillPartMenu:prev start:begin-30];[self presentViewController:prev animated:YES completion:nil];
+    }]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+}
+- (void)chooseQuality {
+    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"播放清晰度" message:@"会优先请求兼容 iPhone 4S 的单文件 MP4。高清选项可能需要登录。" preferredStyle:UIAlertControllerStyleActionSheet];
+    for(NSNumber *value in @[@16,@32,@64]){
+        NSString *name=[value integerValue]==16?@"360P（最稳定）":[value integerValue]==32?@"480P":@"720P";
+        [menu addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+            self.quality=[value integerValue];
+            [self.qualityButton setTitle:[NSString stringWithFormat:@"清晰度 %@",name] forState:UIControlStateNormal];
+        }]];
+    }
+    [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:menu animated:YES completion:nil];
+}
+- (void)openComments {
+    NSString *aid=BLString(self.video[@"aid"]);
+    if(!aid.length){BLAlert(self,@"评论暂不可用",@"需要先获取视频 AV 号，请稍后再试。");return;}
+    [self.navigationController pushViewController:[[BLCommentsController alloc] initWithAid:aid] animated:YES];
+}
 - (void)playTapped {
-    NSString *bvid=BLString(self.video[@"bvid"]),*cid=BLString(self.video[@"cid"]);
+    NSString *bvid=BLString(self.video[@"bvid"]),*cid=self.selectedCID.length?self.selectedCID:BLString(self.video[@"cid"]);
     if(!cid.length){BLAlert(self,@"暂不能播放",@"该视频没有返回 CID，或详情接口不可用。");return;}
     [self.playButton setTitle:@"获取播放地址…" forState:UIControlStateNormal];self.playButton.enabled=NO;
-    NSString *url=[NSString stringWithFormat:@"https://api.bilibili.com/x/player/playurl?bvid=%@&cid=%@&qn=16&fnval=0&platform=html5",bvid,cid];
+    NSString *url=[NSString stringWithFormat:@"https://api.bilibili.com/x/player/playurl?bvid=%@&cid=%@&qn=%ld&fnval=0&platform=html5",bvid,cid,(long)self.quality];
     BLRequest(url,^(NSDictionary *json,NSError *err){
         [self.playButton setTitle:@"全屏播放" forState:UIControlStateNormal];self.playButton.enabled=YES;
         NSDictionary *data=json[@"data"];
@@ -321,6 +498,8 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
         }
         BLStore(@"bl_history_v1",self.video,NO);
         self.player=[[BLPlayerController alloc] initWithContentURL:[NSURL URLWithString:stream]];
+        self.player.videoKey=[NSString stringWithFormat:@"%@:%@",bvid,cid];
+        self.player.resumeAt=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"bl_playback_positions"][self.player.videoKey] doubleValue];
         [self presentMoviePlayerViewControllerAnimated:self.player];
         [self.player.moviePlayer play];
     });
