@@ -199,7 +199,7 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     NSArray *speeds=@[@1.0,@1.25,@1.5,@2.0,@0.75];
     NSUInteger index=0;
     for(NSUInteger i=0;i<speeds.count;i++)if(fabsf([speeds[i] floatValue]-self.preferredRate)<.01){index=i;break;}
-    self.preferredRate=[speeds[(index+1)%speeds.count] floatValue];
+    self.preferredRate=[speeds[(index+1<speeds.count)?index+1:0] floatValue];
     self.moviePlayer.currentPlaybackRate=self.preferredRate;
     [self.speedButton setTitle:[NSString stringWithFormat:@"倍速 %.2g×",self.preferredRate] forState:UIControlStateNormal];
 }
