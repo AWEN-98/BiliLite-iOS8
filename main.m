@@ -1595,14 +1595,17 @@ static NSString *BLHLS(NSDictionary *json){
 @interface BLListController : UITableViewController <UISearchBarDelegate,UITextFieldDelegate>
 @property(nonatomic,strong) UISearchBar *search;
 @property(nonatomic,strong) UISegmentedControl *segments;
-@property(nonatomic,strong) UILabel *emptyLabel;
-@property(nonatomic,strong) UIActivityIndicatorView *spinner;
+@property(nonatomic,strong) UILabel *feedNotice;
+@property(nonatomic,strong) UIButton *moreButton;
 @property(nonatomic,strong) NSCache *imageCache;
 @property(nonatomic,strong) NSArray *items;
 @property(nonatomic,copy) NSString *query;
-@property(nonatomic,assign) NSInteger mode;
+@property(nonatomic,assign) NSInteger mode; // 0 personalized, 1 popular, 2 search, 3 favorite, 4 history
 @property(nonatomic,assign) NSInteger page;
+@property(nonatomic,assign) NSInteger freshIndex;
+@property(nonatomic,assign) NSUInteger requestToken;
 @property(nonatomic,assign) BOOL loading;
+@property(nonatomic,assign) BOOL feedLoggedIn;
 @end
 @implementation BLListController
 - (void)viewDidLoad {
@@ -1610,118 +1613,195 @@ static NSString *BLHLS(NSDictionary *json){
     self.navigationController.navigationBar.barTintColor=[UIColor whiteColor];
     self.navigationController.navigationBar.tintColor=BLPink();
     self.navigationController.navigationBar.titleTextAttributes=@{NSForegroundColorAttributeName:BLInk()};
-    self.tableView.backgroundColor=BLBg();self.tableView.rowHeight=82;
-    self.imageCache=[NSCache new];self.imageCache.countLimit=25;
-    self.items=@[];self.mode=0;self.page=1;
+    self.tableView.backgroundColor=BLBg();
+    self.tableView.rowHeight=82;
+    self.imageCache=[NSCache new];self.imageCache.countLimit=24;
+    self.items=@[];self.mode=0;self.page=1;self.freshIndex=1;
+    self.feedLoggedIn=BLAuthCookie().length>0;
     CGFloat w=self.view.bounds.size.width;
-    UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,98)];
+    UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,121)];
     header.backgroundColor=BLBg();
     self.search=[[UISearchBar alloc] initWithFrame:CGRectMake(0,0,w,51)];
-    self.search.placeholder=@"搜视频、粘贴 BV 号或完整链接";
+    self.search.placeholder=@"搜索视频 / 粘贴 BV 号";
     self.search.delegate=self;self.search.tintColor=BLPink();
     [header addSubview:self.search];
-    self.segments=[[UISegmentedControl alloc] initWithItems:@[@"热门",@"搜索",@"收藏",@"历史"]];
-    self.segments.frame=CGRectMake(9,54,w-18,36);
+    self.segments=[[UISegmentedControl alloc] initWithItems:@[@"推荐",@"热门",@"搜索",@"收藏",@"历史"]];
+    self.segments.frame=CGRectMake(7,54,w-14,36);
     self.segments.autoresizingMask=UIViewAutoresizingFlexibleWidth;
     self.segments.selectedSegmentIndex=0;
     [self.segments addTarget:self action:@selector(changed:) forControlEvents:UIControlEventValueChanged];
     [header addSubview:self.segments];
+    self.feedNotice=[[UILabel alloc] initWithFrame:CGRectMake(12,93,w-24,23)];
+    self.feedNotice.font=[UIFont systemFontOfSize:11];
+    self.feedNotice.textColor=[UIColor grayColor];
+    self.feedNotice.textAlignment=NSTextAlignmentCenter;
+    self.feedNotice.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+    [header addSubview:self.feedNotice];
     self.tableView.tableHeaderView=header;
     UIView *footer=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,52)];
-    UIButton *more=[UIButton buttonWithType:UIButtonTypeSystem];more.frame=CGRectMake(12,5,w-24,42);
-    [more setTitle:@"加载更多" forState:UIControlStateNormal];
+    UIButton *more=[UIButton buttonWithType:UIButtonTypeSystem];
+    more.frame=CGRectMake(12,5,w-24,42);
+    more.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+    [more setTitle:@"换一批推荐" forState:UIControlStateNormal];
     [more setTitleColor:BLPink() forState:UIControlStateNormal];
     [more addTarget:self action:@selector(loadMore) forControlEvents:UIControlEventTouchUpInside];
-    [footer addSubview:more];self.tableView.tableFooterView=footer;
+    [footer addSubview:more];self.moreButton=more;
+    self.tableView.tableFooterView=footer;
     self.navigationItem.rightBarButtonItems=@[
         [[UIBarButtonItem alloc] initWithTitle:@"我的" style:UIBarButtonItemStylePlain target:self action:@selector(openAccount)],
         [[UIBarButtonItem alloc] initWithTitle:@"直播" style:UIBarButtonItemStylePlain target:self action:@selector(openLive)]
     ];
     self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"BV号"
       style:UIBarButtonItemStylePlain target:self action:@selector(openByBV)];
-    UIRefreshControl *refresh=[UIRefreshControl new];[refresh addTarget:self action:@selector(refreshTapped) forControlEvents:UIControlEventValueChanged];
+    UIRefreshControl *refresh=[UIRefreshControl new];
+    [refresh addTarget:self action:@selector(refreshTapped) forControlEvents:UIControlEventValueChanged];
     self.refreshControl=refresh;
+    [self updateFeedChrome];
     [self fetch];
 }
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    if(self.mode>=2)[self loadLocal];
+    if(self.mode>=3)[self loadLocal];
+    else if(self.mode==0){
+        BOOL hasAccount=BLAuthCookie().length>0;
+        if(hasAccount!=self.feedLoggedIn){
+            self.feedLoggedIn=hasAccount;
+            [self refresh];
+        }
+    }
+}
+- (void)updateFeedChrome {
+    self.moreButton.hidden=self.mode>=3 || (self.mode==2 && !self.query.length);
+    [self.moreButton setTitle:self.mode==0?@"换一批推荐":@"加载更多" forState:UIControlStateNormal];
+    if(self.mode==0) {
+        BOOL hasAccount=BLAuthCookie().length>0;
+        self.feedNotice.text=hasAccount?@"为你推荐 · 根据已登录账号的兴趣更新":@"游客推荐 · 登录后会更贴合兴趣";
+    }else if(self.mode==1)self.feedNotice.text=@"热门榜 · 不根据账号个性化排序";
+    else if(self.mode==2)self.feedNotice.text=@"关键词搜索 · 点击结果即可进入详情";
+    else self.feedNotice.text=@"本地收藏和本地历史（云端内容请进入「我的」）";
 }
 - (void)changed:(UISegmentedControl *)control {
-    self.mode=control.selectedSegmentIndex;self.page=1;self.items=@[];self.loading=NO;
+    self.mode=control.selectedSegmentIndex;
+    self.page=1;self.items=@[];self.loading=NO;
+    self.requestToken++;
     [self.tableView reloadData];
-    if(self.mode>=2)[self loadLocal];else if(self.mode==0)[self fetch];
-    else if(self.query.length)[self fetch];else[self showMessage:@"在上方输入关键词，点击键盘上的搜索"];
+    [self updateFeedChrome];
+    if(self.mode>=3)[self loadLocal];
+    else if(self.mode==2&&!self.query.length)[self showMessage:@"在上方输入关键词，点击键盘上的搜索"];
+    else [self fetch];
     [self.search resignFirstResponder];
 }
 - (void)showMessage:(NSString *)message {
     self.tableView.backgroundView=nil;
+    if(!message.length)return;
     UILabel *label=[[UILabel alloc] initWithFrame:CGRectMake(18,0,self.view.bounds.size.width-36,120)];
-    label.numberOfLines=0;label.textAlignment=NSTextAlignmentCenter;label.textColor=[UIColor grayColor];
+    label.numberOfLines=0;label.textAlignment=NSTextAlignmentCenter;
+    label.textColor=[UIColor grayColor];
     label.font=[UIFont systemFontOfSize:13];label.text=message;
     self.tableView.backgroundView=label;
 }
 - (void)loadLocal {
-    NSString *key=self.mode==2?@"bl_favorites_v1":@"bl_history_v1";
+    NSString *key=self.mode==3?@"bl_favorites_v1":@"bl_history_v1";
     self.items=BLStored(key);
     [self.tableView reloadData];
     [self showMessage:self.items.count?@"":@"这里暂时没有视频。打开视频详情后可以收藏或产生观看历史。"];
 }
 - (void)refreshTapped {[self refresh];}
 - (void)refresh {
+    self.requestToken++;self.loading=NO;
     self.page=1;self.items=@[];
+    if(self.mode==0)self.freshIndex++;
     [self.tableView reloadData];
-    if(self.mode>=2){[self loadLocal];[self.refreshControl endRefreshing];}
-    else [self fetch];
+    [self updateFeedChrome];
+    if(self.mode>=3){
+        [self loadLocal];
+        [self.refreshControl endRefreshing];
+    }else if(self.mode==2&&!self.query.length){
+        [self.refreshControl endRefreshing];
+        [self showMessage:@"先输入搜索关键词"];
+    }else [self fetch];
 }
 - (void)loadMore {
-    if(self.mode>=2 || self.loading)return;
-    if(self.mode==1&&!self.query.length)return;
+    if(self.loading || self.mode>=3)return;
+    if(self.mode==0){[self refresh];return;}
+    if(self.mode==2&&!self.query.length)return;
     self.page++;[self fetch];
 }
 - (void)searchBarSearchButtonClicked:(UISearchBar *)bar {
     NSString *text=[bar.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    [bar resignFirstResponder];if(!text.length)return;
+    [bar resignFirstResponder];
+    if(!text.length)return;
     NSString *bvid=BLBV(text);
     if(bvid){[self openVideo:@{@"bvid":bvid,@"title":bvid}];return;}
-    self.query=text;self.mode=1;self.segments.selectedSegmentIndex=1;[self refresh];
+    self.query=text;self.mode=2;self.segments.selectedSegmentIndex=2;
+    [self refresh];
 }
 - (void)fetch {
     if(self.loading)return;
-    if(self.mode>=2){[self loadLocal];return;}
+    if(self.mode>=3){[self loadLocal];return;}
+    if(self.mode==2 && !self.query.length)return;
     self.loading=YES;[UIApplication sharedApplication].networkActivityIndicatorVisible=YES;
-    NSString *url=nil;
-    if(self.mode==0)url=[NSString stringWithFormat:@"https://api.bilibili.com/x/web-interface/popular?ps=20&pn=%ld",(long)self.page];
-    else {
-        NSString *encoded=[self.query stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
-        url=[NSString stringWithFormat:@"https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=%@&page=%ld",encoded,(long)self.page];
-    }
+    NSUInteger token=++self.requestToken;
     NSInteger requestedMode=self.mode,requestedPage=self.page;
-    BLJSONCallback completion=^(NSDictionary *json,NSError *error){
-        if(self.mode!=requestedMode || self.page!=requestedPage)return;
-        self.loading=NO;[UIApplication sharedApplication].networkActivityIndicatorVisible=NO;
+    NSInteger requestedFresh=self.freshIndex;
+    [self showMessage:requestedMode==0?@"正在加载为你推荐…":@"正在加载视频列表…"];
+    BLJSONCallback complete=^(NSDictionary *json,NSError *error){
+        if(token!=self.requestToken || self.mode!=requestedMode || self.page!=requestedPage)return;
+        if(self.mode==0 && self.freshIndex!=requestedFresh)return;
+        self.loading=NO;
+        [UIApplication sharedApplication].networkActivityIndicatorVisible=NO;
         [self.refreshControl endRefreshing];
-        id data=json[@"data"];NSArray *rows=nil;
-        if([data isKindOfClass:[NSDictionary class]])rows=self.mode==0?data[@"list"]:data[@"result"];
+        NSDictionary *data=[json[@"data"] isKindOfClass:[NSDictionary class]]?json[@"data"]:@{};
+        NSArray *rows=nil;
+        if(requestedMode==0){
+            rows=BLRecommendationVideos(json);
+            // When the signed feed is unavailable, show actual popular results
+            // with a clear fallback indicator rather than claiming personalization.
+            if(!rows.count && [data[@"list"] isKindOfClass:[NSArray class]]){
+                rows=data[@"list"];
+                self.feedNotice.text=@"推荐暂不可用 · 当前显示热门榜";
+            }
+        }else if(requestedMode==1)rows=[data[@"list"] isKindOfClass:[NSArray class]]?data[@"list"]:nil;
+        else rows=[data[@"result"] isKindOfClass:[NSArray class]]?data[@"result"]:nil;
         if(![rows isKindOfClass:[NSArray class]] || [json[@"code"] integerValue]!=0){
-            [self showMessage:[NSString stringWithFormat:@"获取视频列表失败：%@\n可以试试 BV号 入口，或稍后重试。",BLFailure(json,error)]];
+            [self showMessage:[NSString stringWithFormat:@"列表获取失败：%@\n可切换「热门」或下拉重试。",BLFailure(json,error)]];
             if(self.page>1)self.page--;
             return;
         }
         NSMutableArray *list=[self.items mutableCopy]?:[NSMutableArray array];
-        for(NSDictionary *raw in rows) {
+        for(id raw in rows){
             NSDictionary *video=BLNormalize(raw);
             if(!video)continue;
             BOOL duplicate=NO;
-            for(NSDictionary *item in list)if([item[@"bvid"] isEqualToString:video[@"bvid"]]){duplicate=YES;break;}
+            for(NSDictionary *other in list)if([other[@"bvid"] isEqualToString:video[@"bvid"]]){duplicate=YES;break;}
             if(!duplicate)[list addObject:video];
+            if(list.count>=100)break;
         }
         self.items=list;[self.tableView reloadData];
-        [self showMessage:list.count?@"":@"当前没有符合条件的视频"];
+        [self showMessage:list.count?@"":@"当前没有可播放的视频结果，可以换一批或改看热门。"];
     };
-    if(self.mode==1)BLSearch(self.query,self.page,completion);
-    else BLRequest(url,completion);
+    if(requestedMode==0){
+        BLRecommend(requestedFresh,^(NSDictionary *json,NSError *error){
+            if(token!=self.requestToken || self.mode!=0 || self.freshIndex!=requestedFresh)return;
+            if(!error && [json[@"code"] integerValue]==0 && BLRecommendationVideos(json).count){
+                complete(json,nil);return;
+            }
+            // Public chart fallback remains usable when personalized feed
+            // is rejected due to Bilibili risk control or account limits.
+            BLRequest(@"https://api.bilibili.com/x/web-interface/popular?ps=20&pn=1",^(NSDictionary *hot,NSError *hotError){
+                if(!hotError && [hot[@"code"] integerValue]==0 && [hot[@"data"] isKindOfClass:[NSDictionary class]]){
+                    complete(hot,nil);
+                }else{
+                    complete(json?:hot,error?:hotError);
+                }
+            });
+        });
+    }else if(requestedMode==1){
+        NSString *url=[NSString stringWithFormat:@"https://api.bilibili.com/x/web-interface/popular?ps=20&pn=%ld",(long)requestedPage];
+        BLRequest(url,complete);
+    }else BLSearch(self.query,requestedPage,complete);
 }
+
 - (void)openAccount {
     [self.search resignFirstResponder];
     [self.navigationController pushViewController:[[BLAccountController alloc] initWithStyle:UITableViewStyleGrouped] animated:YES];
