@@ -1015,6 +1015,381 @@ static NSString *BLHLS(NSDictionary *json){
 }
 @end
 
+
+@interface BLQRLoginController : UIViewController
+@property(nonatomic,strong) UIImageView *qrView;
+@property(nonatomic,strong) UILabel *status;
+@property(nonatomic,strong) UILabel *instructions;
+@property(nonatomic,strong) UIButton *reloadButton;
+@property(nonatomic,strong) NSTimer *timer;
+@property(nonatomic,copy) NSString *qrKey;
+@property(nonatomic,assign) NSTimeInterval expiresAt;
+@property(nonatomic,assign) BOOL requestActive;
+@end
+@implementation BLQRLoginController
+- (void)viewDidLoad {
+    [super viewDidLoad];self.title=@"扫码登录 B 站";
+    self.view.backgroundColor=BLBg();
+    CGFloat w=self.view.bounds.size.width;
+    self.qrView=[[UIImageView alloc] initWithFrame:CGRectMake(MAX(0,(w-228)/2),14,228,228)];
+    self.qrView.backgroundColor=[UIColor whiteColor];
+    self.qrView.contentMode=UIViewContentModeScaleAspectFit;
+    self.qrView.layer.cornerRadius=12;self.qrView.clipsToBounds=YES;
+    [self.view addSubview:self.qrView];
+    self.status=[[UILabel alloc] initWithFrame:CGRectMake(14,249,w-28,53)];
+    self.status.textColor=BLInk();self.status.textAlignment=NSTextAlignmentCenter;
+    self.status.numberOfLines=3;self.status.font=[UIFont boldSystemFontOfSize:13];
+    [self.view addSubview:self.status];
+    self.reloadButton=[UIButton buttonWithType:UIButtonTypeCustom];
+    self.reloadButton.frame=CGRectMake(14,307,w-28,42);
+    [self.reloadButton setTitle:@"生成登录二维码" forState:UIControlStateNormal];
+    self.reloadButton.backgroundColor=BLPink();
+    self.reloadButton.layer.cornerRadius=9;
+    [self.reloadButton addTarget:self action:@selector(generateQR) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.reloadButton];
+    self.instructions=[[UILabel alloc] initWithFrame:CGRectMake(15,355,w-30,76)];
+    self.instructions.text=@"用另一台已登录 B 站的手机 App 扫描上方二维码，再在那台手机确认授权。\n二维码有效期约 3 分钟。";
+    self.instructions.font=[UIFont systemFontOfSize:12];
+    self.instructions.numberOfLines=4;
+    self.instructions.textColor=[UIColor grayColor];
+    [self.view addSubview:self.instructions];
+    [self generateQR];
+}
+- (void)stopPolling {
+    [self.timer invalidate];self.timer=nil;self.qrKey=nil;self.expiresAt=0;
+}
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self stopPolling];
+}
+- (void)dealloc {[self stopPolling];}
+- (void)generateQR {
+    [self stopPolling];
+    [self.reloadButton setTitle:@"二维码获取中…" forState:UIControlStateNormal];
+    self.reloadButton.enabled=NO;self.status.text=@"正在连接 B 站登录服务";
+    self.qrView.image=nil;
+    BLRequest(@"https://passport.bilibili.com/x/passport-login/web/qrcode/generate",^(NSDictionary *json,NSError *error){
+        if(!self.view.window)return;
+        self.reloadButton.enabled=YES;
+        [self.reloadButton setTitle:@"刷新二维码" forState:UIControlStateNormal];
+        NSDictionary *data=[json[@"data"] isKindOfClass:[NSDictionary class]]?json[@"data"]:@{};
+        NSString *address=BLString(data[@"url"]),*qrKey=BLString(data[@"qrcode_key"]);
+        if(error || [json[@"code"] integerValue]!=0 || !address.length || !qrKey.length){
+            self.status.text=[NSString stringWithFormat:@"获取失败：%@",BLFailure(json,error)];return;
+        }
+        UIImage *image=BLQRImage(address);
+        if(!image){self.status.text=@"无法在此 iOS 版本绘制二维码";return;}
+        self.qrView.image=image;self.qrKey=qrKey;
+        self.expiresAt=[[NSDate date] timeIntervalSince1970]+180;
+        self.status.text=@"等待扫码…";
+        self.timer=[NSTimer scheduledTimerWithTimeInterval:3 target:self selector:@selector(pollOnce) userInfo:nil repeats:YES];
+        [self pollOnce];
+    });
+}
+- (void)pollOnce {
+    if(!self.view.window || !self.qrKey.length || self.requestActive)return;
+    if([[NSDate date] timeIntervalSince1970]>=self.expiresAt){
+        [self stopPolling];self.status.text=@"二维码已过期，请点击刷新";return;
+    }
+    self.requestActive=YES;
+    NSString *current=[self.qrKey copy];
+    BLPollLogin(current,^(NSDictionary *json,NSDictionary *cookies,NSError *error){
+        self.requestActive=NO;
+        if(![self.qrKey isEqualToString:current] || !self.view.window)return;
+        NSDictionary *data=[json[@"data"] isKindOfClass:[NSDictionary class]]?json[@"data"]:@{};
+        NSInteger resultCode=[data[@"code"] integerValue];
+        if(error || !json){
+            self.status.text=@"检查失败，请检查网络连接";return;
+        }
+        if([json[@"code"] integerValue]!=0){
+            self.status.text=[NSString stringWithFormat:@"扫码检查失败：%@",BLFailure(json,error)];return;
+        }
+        if(resultCode==86101){self.status.text=@"等待扫描二维码…";return;}
+        if(resultCode==86090){self.status.text=@"已扫描，请在另一台手机上确认登录";return;}
+        if(resultCode==86038){
+            [self stopPolling];self.status.text=@"二维码已失效，请刷新";return;
+        }
+        if(resultCode==0){
+            NSMutableDictionary *session=[cookies mutableCopy]?:[NSMutableDictionary dictionary];
+            // Some Bilibili deployments include login cookies in the returned SSO URL.
+            NSString *redirect=BLString(data[@"url"]);
+            NSURLComponents *components=redirect.length?[NSURLComponents componentsWithString:redirect]:nil;
+            for(NSURLQueryItem *item in components.queryItems){
+                if([@[@"SESSDATA",@"bili_jct",@"DedeUserID",@"DedeUserID__ckMd5",@"sid"] containsObject:item.name] && item.value.length)
+                    session[item.name]=item.value;
+            }
+            if(!BLSaveSession(session)){
+                [self stopPolling];
+                self.status.text=@"扫码已确认，但未取得有效登录 Cookie，或钥匙串写入失败。请重新扫描。";
+                return;
+            }
+            [self stopPolling];
+            self.status.text=@"授权成功，正在验证登录状态…";
+            BLRequest(@"https://api.bilibili.com/x/web-interface/nav",^(NSDictionary *user,NSError *verifyError){
+                NSDictionary *profile=[user[@"data"] isKindOfClass:[NSDictionary class]]?user[@"data"]:@{};
+                if(!verifyError && [user[@"code"] integerValue]==0 && [profile[@"isLogin"] boolValue]){
+                    self.status.text=@"登录成功";
+                    [self.navigationController popViewControllerAnimated:YES];
+                }else{
+                    BLClearSession();
+                    self.status.text=@"登录凭证验证失败，请刷新二维码重试。";
+                }
+            });
+            return;
+        }
+        self.status.text=BLString(data[@"message"]).length?BLString(data[@"message"]):@"登录状态暂不可用";
+    });
+}
+@end
+
+@interface BLRemoteListController : UITableViewController
+@property(nonatomic,assign) NSInteger mode;  // 0 folders, 1 folder videos, 2 following, 3 history
+@property(nonatomic,copy) NSString *mid;
+@property(nonatomic,copy) NSString *mediaID;
+@property(nonatomic,strong) NSArray *items;
+@property(nonatomic,assign) NSInteger page;
+@property(nonatomic,assign) BOOL loading;
+@property(nonatomic,strong) NSDictionary *historyCursor;
+@property(nonatomic,strong) UILabel *messageLabel;
+@end
+@implementation BLRemoteListController
+- (instancetype)initWithMode:(NSInteger)mode mid:(NSString *)mid mediaID:(NSString *)media {
+    if((self=[super initWithStyle:UITableViewStylePlain])){
+        self.mode=mode;self.mid=mid;self.mediaID=media;self.page=1;self.items=@[];
+    }
+    return self;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title=@[@"账号收藏夹",@"收藏夹视频",@"关注的 UP 主",@"云端观看历史"][self.mode];
+    self.tableView.backgroundColor=BLBg();self.tableView.rowHeight=67;
+    UIView *foot=[[UIView alloc] initWithFrame:CGRectMake(0,0,self.view.bounds.size.width,54)];
+    UIButton *more=[UIButton buttonWithType:UIButtonTypeSystem];
+    more.frame=CGRectMake(12,6,self.view.bounds.size.width-24,40);
+    [more setTitle:@"加载更多" forState:UIControlStateNormal];
+    [more setTitleColor:BLPink() forState:UIControlStateNormal];
+    [more addTarget:self action:@selector(loadMore) forControlEvents:UIControlEventTouchUpInside];
+    [foot addSubview:more];self.tableView.tableFooterView=foot;
+    UIRefreshControl *refresh=[UIRefreshControl new];
+    [refresh addTarget:self action:@selector(refreshList) forControlEvents:UIControlEventValueChanged];
+    self.refreshControl=refresh;
+    [self refreshList];
+}
+- (void)showMessage:(NSString *)message {
+    UILabel *label=[[UILabel alloc] initWithFrame:CGRectMake(17,0,self.view.bounds.size.width-34,130)];
+    label.textAlignment=NSTextAlignmentCenter;label.numberOfLines=0;
+    label.textColor=[UIColor grayColor];label.font=[UIFont systemFontOfSize:13];
+    label.text=message;self.tableView.backgroundView=message.length?label:nil;
+}
+- (void)refreshList {
+    self.page=1;self.historyCursor=nil;self.items=@[];
+    [self.tableView reloadData];[self loadPage];
+}
+- (void)loadMore {
+    if(self.loading || self.mode==0)return;
+    if(self.mode==3 && !self.historyCursor)return;
+    self.page++;[self loadPage];
+}
+- (void)loadPage {
+    if(self.loading)return;
+    if(!BLAuthCookie().length){[self showMessage:@"需要先登录账号"];[self.refreshControl endRefreshing];return;}
+    NSString *url=nil;
+    if(self.mode==0)url=[NSString stringWithFormat:@"https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=%@",self.mid];
+    else if(self.mode==1)url=[NSString stringWithFormat:@"https://api.bilibili.com/x/v3/fav/resource/list?media_id=%@&pn=%ld&ps=20&platform=web",self.mediaID,(long)self.page];
+    else if(self.mode==2)url=[NSString stringWithFormat:@"https://api.bilibili.com/x/relation/followings?vmid=%@&pn=%ld&ps=20",self.mid,(long)self.page];
+    else {
+        NSMutableString *q=[NSMutableString stringWithString:@"https://api.bilibili.com/x/web-interface/history/cursor?type=archive&ps=20"];
+        NSDictionary *c=self.historyCursor;
+        if(c.count)[q appendFormat:@"&max=%@&view_at=%@&business=%@",BLString(c[@"max"]),BLString(c[@"view_at"]),BLQueryEscape(BLString(c[@"business"]))];
+        url=q;
+    }
+    self.loading=YES;[self showMessage:@"正在同步账号资料…"];
+    BLRequest(url,^(NSDictionary *json,NSError *error){
+        self.loading=NO;[self.refreshControl endRefreshing];
+        NSDictionary *data=[json[@"data"] isKindOfClass:[NSDictionary class]]?json[@"data"]:@{};
+        if(error || [json[@"code"] integerValue]!=0){
+            [self showMessage:[NSString stringWithFormat:@"读取失败：%@\n可能是账号过期或 B 站接口限制。",BLFailure(json,error)]];
+            if(self.page>1)self.page--;return;
+        }
+        NSArray *records=[data[@"list"] isKindOfClass:[NSArray class]]?data[@"list"]:@[];
+        if(self.mode==1)records=[data[@"medias"] isKindOfClass:[NSArray class]]?data[@"medias"]:@[];
+        if(self.mode==3)self.historyCursor=[data[@"cursor"] isKindOfClass:[NSDictionary class]]?data[@"cursor"]:nil;
+        NSMutableArray *all=[self.items mutableCopy];
+        for(NSDictionary *raw in records){
+            if(![raw isKindOfClass:[NSDictionary class]])continue;
+            NSMutableDictionary *item=[NSMutableDictionary dictionaryWithDictionary:raw];
+            if(self.mode==0){
+                item[@"bl_name"]=BLString(raw[@"title"]);
+                item[@"bl_subtitle"]=[NSString stringWithFormat:@"%@ 条视频",BLString(raw[@"media_count"])];
+            }else if(self.mode==2){
+                item[@"bl_name"]=BLString(raw[@"uname"]);
+                item[@"bl_subtitle"]=[NSString stringWithFormat:@"UID %@ · %@",BLString(raw[@"mid"]),BLString(raw[@"sign"])];
+            }else{
+                NSDictionary *nested=[raw[@"history"] isKindOfClass:[NSDictionary class]]?raw[@"history"]:@{};
+                NSString *bvid=BLString(raw[@"bvid"]);
+                if(!bvid.length)bvid=BLString(nested[@"bvid"]);
+                NSDictionary *owner=[raw[@"upper"] isKindOfClass:[NSDictionary class]]?raw[@"upper"]:@{};
+                NSString *title=BLString(raw[@"title"]);
+                if(!bvid.length)continue;
+                item[@"bl_name"]=title;item[@"bl_bvid"]=bvid;
+                item[@"bl_subtitle"]=BLString(owner[@"name"]).length?BLString(owner[@"name"]):BLString(raw[@"author"]);
+                NSString *picture=BLString(raw[@"cover"]);if(!picture.length)picture=BLString(raw[@"pic"]);
+                item[@"bl_cover"]=picture;
+            }
+            [all addObject:item];
+            if(all.count>=120)break;
+        }
+        self.items=all;
+        [self.tableView reloadData];
+        [self showMessage:all.count?@"":@"暂无内容，或接口当前没有返回可访问的数据。"];
+    });
+}
+- (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section{return self.items.count;}
+- (UITableViewCell *)tableView:(UITableView *)table cellForRowAtIndexPath:(NSIndexPath *)index {
+    UITableViewCell *cell=[table dequeueReusableCellWithIdentifier:@"remote"];
+    if(!cell)cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"remote"];
+    NSDictionary *item=self.items[index.row];
+    cell.textLabel.text=BLString(item[@"bl_name"]);
+    cell.textLabel.font=[UIFont boldSystemFontOfSize:13];
+    cell.textLabel.textColor=BLInk();cell.detailTextLabel.text=BLString(item[@"bl_subtitle"]);
+    cell.detailTextLabel.font=[UIFont systemFontOfSize:11];
+    cell.detailTextLabel.textColor=[UIColor grayColor];cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;
+    return cell;
+}
+- (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)index {
+    [table deselectRowAtIndexPath:index animated:YES];
+    NSDictionary *item=self.items[index.row];
+    if(self.mode==0){
+        NSString *media=BLString(item[@"id"]);
+        if(media.length)[self.navigationController pushViewController:[[BLRemoteListController alloc] initWithMode:1 mid:self.mid mediaID:media] animated:YES];
+    }else if(self.mode==2){
+        NSString *uid=BLString(item[@"mid"]);
+        NSString *name=BLString(item[@"uname"]);
+        UIAlertController *menu=[UIAlertController alertControllerWithTitle:name
+            message:[NSString stringWithFormat:@"UID %@",uid] preferredStyle:UIAlertControllerStyleAlert];
+        [menu addAction:[UIAlertAction actionWithTitle:@"复制个人空间链接" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            [UIPasteboard generalPasteboard].string=[@"https://space.bilibili.com/" stringByAppendingString:uid];
+        }]];
+        [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:menu animated:YES completion:nil];
+    }else{
+        NSString *bvid=BLString(item[@"bl_bvid"]);if(!bvid.length)return;
+        NSDictionary *video=@{@"bvid":bvid,@"title":BLString(item[@"bl_name"]),
+          @"pic":BLString(item[@"bl_cover"]),@"author":BLString(item[@"bl_subtitle"])};
+        [self.navigationController pushViewController:[[BLDetailController alloc] initWithVideo:video] animated:YES];
+    }
+}
+@end
+
+@interface BLAccountController : UITableViewController
+@property(nonatomic,strong) NSDictionary *profile;
+@property(nonatomic,strong) UIImageView *portrait;
+@property(nonatomic,strong) UILabel *userLabel;
+@property(nonatomic,strong) UILabel *details;
+@property(nonatomic,strong) NSCache *imageCache;
+@property(nonatomic,assign) BOOL checking;
+@end
+@implementation BLAccountController
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title=@"我的 B 站";self.tableView.backgroundColor=BLBg();
+    self.tableView.rowHeight=58;
+    self.imageCache=[NSCache new];self.imageCache.countLimit=2;
+    CGFloat w=self.view.bounds.size.width;
+    UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,140)];
+    header.backgroundColor=[UIColor whiteColor];
+    self.portrait=[[UIImageView alloc] initWithFrame:CGRectMake(15,19,70,70)];
+    self.portrait.layer.cornerRadius=35;self.portrait.clipsToBounds=YES;
+    self.portrait.backgroundColor=BLBg();
+    [header addSubview:self.portrait];
+    self.userLabel=[[UILabel alloc] initWithFrame:CGRectMake(99,20,w-111,35)];
+    self.userLabel.font=[UIFont boldSystemFontOfSize:18];self.userLabel.textColor=BLInk();
+    [header addSubview:self.userLabel];
+    self.details=[[UILabel alloc] initWithFrame:CGRectMake(99,58,w-110,74)];
+    self.details.textColor=[UIColor grayColor];self.details.numberOfLines=3;
+    self.details.font=[UIFont systemFontOfSize:12];[header addSubview:self.details];
+    self.tableView.tableHeaderView=header;
+    self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
+        target:self action:@selector(checkAccount)];
+    [self render];[self checkAccount];
+}
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self render];
+    if(BLAuthCookie().length)[self checkAccount];
+}
+- (void)render {
+    BOOL logged=BLAuthCookie().length>0;
+    self.userLabel.text=logged?(BLString(self.profile[@"uname"]).length?BLString(self.profile[@"uname"]):@"正在检查登录状态"):@"未登录";
+    NSString *mid=BLString(self.profile[@"mid"]);
+    NSDictionary *level=[self.profile[@"level_info"] isKindOfClass:[NSDictionary class]]?self.profile[@"level_info"]:@{};
+    self.details.text=logged?[NSString stringWithFormat:@"UID：%@\n等级：LV%@ · 登录凭证已保存在钥匙串",
+      mid,BLString(level[@"current_level"])]:@"点击下方「扫码登录」\n使用另一台手机的 B 站 App 授权";
+    if(logged && BLString(self.profile[@"face"]).length)
+        BLFetchImage(BLString(self.profile[@"face"]),self.portrait,self.imageCache);
+    else self.portrait.image=nil;
+    [self.tableView reloadData];
+}
+- (void)checkAccount {
+    if(self.checking||!BLAuthCookie().length){[self render];return;}
+    self.checking=YES;
+    BLRequest(@"https://api.bilibili.com/x/web-interface/nav",^(NSDictionary *json,NSError *error){
+        self.checking=NO;
+        NSDictionary *data=[json[@"data"] isKindOfClass:[NSDictionary class]]?json[@"data"]:@{};
+        if(!error && [json[@"code"] integerValue]==0 && [data[@"isLogin"] boolValue]){
+            self.profile=data;
+        }else{
+            self.profile=nil;
+            self.details.text=[NSString stringWithFormat:@"账号验证失败：%@",BLFailure(json,error)];
+        }
+        [self render];
+        if(error||[json[@"code"] integerValue]!=0)self.details.text=@"登录状态无法验证；可重试或重新扫码";
+    });
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)table{return 2;}
+- (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section {
+    return section==0?1:(BLAuthCookie().length?4:0);
+}
+- (NSString *)tableView:(UITableView *)table titleForHeaderInSection:(NSInteger)section {
+    return section==0?@"账号":@"账号内容（只读）";
+}
+- (UITableViewCell *)tableView:(UITableView *)table cellForRowAtIndexPath:(NSIndexPath *)index {
+    UITableViewCell *cell=[table dequeueReusableCellWithIdentifier:@"account"];
+    if(!cell)cell=[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"account"];
+    BOOL logged=BLAuthCookie().length>0;
+    if(index.section==0)cell.textLabel.text=logged?@"退出登录（仅删除本机凭证）":@"扫码登录";
+    else cell.textLabel.text=@[@"我的收藏夹",@"关注列表",@"云端观看历史",@"重新验证账号"][index.row];
+    cell.textLabel.font=[UIFont systemFontOfSize:15];
+    cell.textLabel.textColor=index.section==0&&logged?[UIColor redColor]:BLInk();
+    cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;
+    return cell;
+}
+- (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)index {
+    [table deselectRowAtIndexPath:index animated:YES];
+    BOOL logged=BLAuthCookie().length>0;
+    if(index.section==0){
+        if(!logged){
+            [self.navigationController pushViewController:[BLQRLoginController new] animated:YES];
+        }else{
+            UIAlertController *confirm=[UIAlertController alertControllerWithTitle:@"退出 B 站账号？"
+                 message:@"只清除这台 iPhone 上的登录凭证，不影响其他设备的登录。" preferredStyle:UIAlertControllerStyleAlert];
+            [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+            [confirm addAction:[UIAlertAction actionWithTitle:@"退出" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+                BLClearSession();self.profile=nil;[self render];
+            }]];
+            [self presentViewController:confirm animated:YES completion:nil];
+        }
+        return;
+    }
+    if(!logged)return;
+    if(index.row==3){[self checkAccount];return;}
+    NSString *uid=BLString(self.profile[@"mid"]);
+    if(!uid.length){BLAlert(self,@"账号资料尚未就绪",@"请先点右上角刷新，确认 UID 已加载。");return;}
+    NSInteger mode=index.row==0?0:index.row==1?2:3;
+    [self.navigationController pushViewController:[[BLRemoteListController alloc] initWithMode:mode mid:uid mediaID:nil] animated:YES];
+}
+@end
+
 @interface BLListController : UITableViewController <UISearchBarDelegate,UITextFieldDelegate>
 @property(nonatomic,strong) UISearchBar *search;
 @property(nonatomic,strong) UISegmentedControl *segments;
@@ -1056,8 +1431,10 @@ static NSString *BLHLS(NSDictionary *json){
     [more setTitleColor:BLPink() forState:UIControlStateNormal];
     [more addTarget:self action:@selector(loadMore) forControlEvents:UIControlEventTouchUpInside];
     [footer addSubview:more];self.tableView.tableFooterView=footer;
-    self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"直播"
-      style:UIBarButtonItemStylePlain target:self action:@selector(openLive)];
+    self.navigationItem.rightBarButtonItems=@[
+        [[UIBarButtonItem alloc] initWithTitle:@"我的" style:UIBarButtonItemStylePlain target:self action:@selector(openAccount)],
+        [[UIBarButtonItem alloc] initWithTitle:@"直播" style:UIBarButtonItemStylePlain target:self action:@selector(openLive)]
+    ];
     self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"BV号"
       style:UIBarButtonItemStylePlain target:self action:@selector(openByBV)];
     UIRefreshControl *refresh=[UIRefreshControl new];[refresh addTarget:self action:@selector(refreshTapped) forControlEvents:UIControlEventValueChanged];
@@ -1142,6 +1519,10 @@ static NSString *BLHLS(NSDictionary *json){
     };
     if(self.mode==1)BLSearch(self.query,self.page,completion);
     else BLRequest(url,completion);
+}
+- (void)openAccount {
+    [self.search resignFirstResponder];
+    [self.navigationController pushViewController:[[BLAccountController alloc] initWithStyle:UITableViewStyleGrouped] animated:YES];
 }
 - (void)openLive {
     [self.search resignFirstResponder];
