@@ -4,6 +4,8 @@
 #import <CommonCrypto/CommonDigest.h>
 #include <string.h>
 #include <time.h>
+#import <Security/Security.h>
+#import <CoreImage/CoreImage.h>
 
 static UIColor *BLPink(void){return [UIColor colorWithRed:.93 green:.27 blue:.47 alpha:1];}
 static UIColor *BLBg(void){return [UIColor colorWithRed:.965 green:.972 blue:.985 alpha:1];}
@@ -66,6 +68,109 @@ static void BLAlert(UIViewController *vc,NSString *title,NSString *message){
     [vc presentViewController:a animated:YES completion:nil];
 }
 
+
+// All account secrets live in iOS Keychain (not NSUserDefaults, source, or logs).
+static NSString *const BLAccountService=@"com.finn.bililite.account";
+static NSString *const BLAccountKey=@"session";
+static NSDictionary *BLSession(void){
+    NSDictionary *query=@{(__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
+      (__bridge id)kSecAttrService:BLAccountService,(__bridge id)kSecAttrAccount:BLAccountKey,
+      (__bridge id)kSecReturnData:@YES,(__bridge id)kSecMatchLimit:(__bridge id)kSecMatchLimitOne};
+    CFTypeRef answer=NULL;
+    OSStatus status=SecItemCopyMatching((__bridge CFDictionaryRef)query,&answer);
+    if(status!=errSecSuccess || !answer)return nil;
+    NSData *data=CFBridgingRelease(answer);
+    id saved=[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    return [saved isKindOfClass:[NSDictionary class]]?saved:nil;
+}
+static BOOL BLSaveSession(NSDictionary *values){
+    NSMutableDictionary *safe=[NSMutableDictionary dictionary];
+    for(NSString *name in @[@"SESSDATA",@"DedeUserID",@"DedeUserID__ckMd5",@"bili_jct",@"sid"]){
+        NSString *value=BLString(values[name]);if(value.length)safe[name]=value;
+    }
+    if(!BLString(safe[@"SESSDATA"]).length)return NO;
+    NSData *data=[NSJSONSerialization dataWithJSONObject:safe options:0 error:NULL];
+    if(!data)return NO;
+    NSDictionary *match=@{(__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService:BLAccountService,(__bridge id)kSecAttrAccount:BLAccountKey};
+    SecItemDelete((__bridge CFDictionaryRef)match);
+    NSMutableDictionary *entry=[match mutableCopy];
+    entry[(__bridge id)kSecValueData]=data;
+    entry[(__bridge id)kSecAttrAccessible]=(__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
+    return SecItemAdd((__bridge CFDictionaryRef)entry,NULL)==errSecSuccess;
+}
+static void BLClearSession(void){
+    NSDictionary *match=@{(__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
+       (__bridge id)kSecAttrService:BLAccountService,(__bridge id)kSecAttrAccount:BLAccountKey};
+    SecItemDelete((__bridge CFDictionaryRef)match);
+    NSHTTPCookieStorage *storage=[NSHTTPCookieStorage sharedHTTPCookieStorage];
+    for(NSHTTPCookie *cookie in storage.cookies){
+        if([cookie.domain hasSuffix:@".bilibili.com"] || [cookie.domain isEqualToString:@"bilibili.com"])
+            [storage deleteCookie:cookie];
+    }
+}
+static NSString *BLAuthCookie(void){
+    NSDictionary *session=BLSession();
+    NSMutableArray *parts=[NSMutableArray array];
+    for(NSString *name in @[@"SESSDATA",@"DedeUserID",@"DedeUserID__ckMd5",@"bili_jct",@"sid"]){
+        NSString *value=BLString(session[name]);
+        if(value.length)[parts addObject:[NSString stringWithFormat:@"%@=%@",name,value]];
+    }
+    return [parts componentsJoinedByString:@"; "];
+}
+static NSDictionary *BLCookiesFromResponse(NSHTTPURLResponse *response){
+    NSMutableDictionary *session=[NSMutableDictionary dictionary];
+    NSURL *url=response.URL?:[NSURL URLWithString:@"https://passport.bilibili.com"];
+    NSMutableArray *cookies=[NSMutableArray array];
+    [cookies addObjectsFromArray:[[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:url]?:@[]];
+    if(response.allHeaderFields.count){
+        [cookies addObjectsFromArray:[NSHTTPCookie cookiesWithResponseHeaderFields:response.allHeaderFields forURL:url]?:@[]];
+    }
+    for(NSHTTPCookie *cookie in cookies){
+        if([@[@"SESSDATA",@"DedeUserID",@"DedeUserID__ckMd5",@"bili_jct",@"sid"] containsObject:cookie.name])
+            session[cookie.name]=cookie.value?:@"";
+    }
+    return session;
+}
+typedef void(^BLAuthCallback)(NSDictionary *,NSDictionary *,NSError *);
+static void BLPollLogin(NSString *qrKey,BLAuthCallback done){
+    NSString *escaped=[qrKey stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+    NSURL *url=[NSURL URLWithString:[@"https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key=" stringByAppendingString:escaped?:@""]];
+    NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:15];
+    [request setValue:@"https://www.bilibili.com/" forHTTPHeaderField:@"Referer"];
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data,NSURLResponse *response,NSError *error){
+        NSDictionary *json=nil;
+        if(!error && data.length){
+            id decoded=[NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+            if([decoded isKindOfClass:[NSDictionary class]])json=decoded;
+        }
+        NSDictionary *cookies=([response isKindOfClass:[NSHTTPURLResponse class]])?BLCookiesFromResponse((NSHTTPURLResponse *)response):@{};
+        dispatch_async(dispatch_get_main_queue(),^{if(done)done(json,cookies,error);});
+    }] resume];
+}
+static UIImage *BLQRImage(NSString *text){
+    NSData *utf8=[text dataUsingEncoding:NSUTF8StringEncoding];
+    if(!utf8.length)return nil;
+    CIFilter *filter=[CIFilter filterWithName:@"CIQRCodeGenerator"];
+    [filter setValue:utf8 forKey:@"inputMessage"];
+    [filter setValue:@"M" forKey:@"inputCorrectionLevel"];
+    CIImage *input=[filter outputImage];
+    if(!input)return nil;
+    CIContext *context=[CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer:@YES}];
+    CGImageRef bitmap=[context createCGImage:input fromRect:input.extent];
+    if(!bitmap)return nil;
+    UIImage *qr=[UIImage imageWithCGImage:bitmap];
+    CGImageRelease(bitmap);
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(228,228),YES,1);
+    CGContextRef graphic=UIGraphicsGetCurrentContext();
+    CGContextSetInterpolationQuality(graphic,kCGInterpolationNone);
+    [[UIColor whiteColor] setFill];UIRectFill(CGRectMake(0,0,228,228));
+    [qr drawInRect:CGRectMake(12,12,204,204)];
+    UIImage *result=UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return result;
+}
+
 typedef void(^BLJSONCallback)(NSDictionary *,NSError *);
 static void BLRequest(NSString *url,BLJSONCallback done){
     NSURL *endpoint=[NSURL URLWithString:url];
@@ -74,6 +179,12 @@ static void BLRequest(NSString *url,BLJSONCallback done){
     [req setValue:@"https://www.bilibili.com/" forHTTPHeaderField:@"Referer"];
     [req setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 8_4_1 like Mac OS X) AppleWebKit/600.1.4 Mobile/12H321" forHTTPHeaderField:@"User-Agent"];
     [req setValue:@"application/json, text/plain, */*" forHTTPHeaderField:@"Accept"];
+    NSString *host=[[endpoint host] lowercaseString];
+    // Never send login cookies to third-party image/CDN or arbitrary URLs.
+    if([host isEqualToString:@"api.bilibili.com"] || [host isEqualToString:@"api.live.bilibili.com"]){
+        NSString *cookie=BLAuthCookie();
+        if(cookie.length)[req setValue:cookie forHTTPHeaderField:@"Cookie"];
+    }
     [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data,NSURLResponse *response,NSError *error){
         NSDictionary *obj=nil;
         if(!error && data.length && data.length<3*1024*1024){
