@@ -1,0 +1,12 @@
+#!/bin/sh
+# Re-register the application icon on jailbroken legacy iOS.
+if [ -x /usr/bin/uicache ]; then
+  if [ -x /usr/bin/su ]; then
+    /usr/bin/su mobile -c /usr/bin/uicache >/dev/null 2>&1 || /usr/bin/uicache >/dev/null 2>&1 || true
+  else
+    /usr/bin/uicache >/dev/null 2>&1 || true
+  fi
+elif command -v uicache >/dev/null 2>&1; then
+  uicache >/dev/null 2>&1 || true
+fi
+exit 0
