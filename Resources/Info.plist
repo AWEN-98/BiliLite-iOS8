@@ -11,8 +11,8 @@
   <key>CFBundleSignature</key><string>????</string>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
-  <key>CFBundleVersion</key><string>8</string>
-  <key>CFBundleShortVersionString</key><string>0.2.1</string>
+  <key>CFBundleVersion</key><string>9</string>
+  <key>CFBundleShortVersionString</key><string>0.3.0</string>
   <key>MinimumOSVersion</key><string>8.0</string>
   <key>LSRequiresIPhoneOS</key><true/>
   <key>UIDeviceFamily</key><array><integer>1</integer></array>
@@ -27,6 +27,6 @@
   </dict></dict>
   <key>UILaunchImageFile</key><string>Default</string>
   <key>UISupportedInterfaceOrientations</key>
-  <array><string>UIInterfaceOrientationPortrait</string></array>
+  <array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
 </dict>
 </plist>
