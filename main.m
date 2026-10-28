@@ -2,6 +2,7 @@
 #import <MediaPlayer/MediaPlayer.h>
 #import <math.h>
 #import <CommonCrypto/CommonDigest.h>
+#include <string.h>
 
 static UIColor *BLPink(void){return [UIColor colorWithRed:.93 green:.27 blue:.47 alpha:1];}
 static UIColor *BLBg(void){return [UIColor colorWithRed:.965 green:.972 blue:.985 alpha:1];}
@@ -390,7 +391,7 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     if(self.mode>=2)[self loadLocal];
 }
 - (void)changed:(UISegmentedControl *)control {
-    self.mode=control.selectedSegmentIndex;self.page=1;self.items=@[];
+    self.mode=control.selectedSegmentIndex;self.page=1;self.items=@[];self.loading=NO;
     [self.tableView reloadData];
     if(self.mode>=2)[self loadLocal];else if(self.mode==0)[self fetch];
     else if(self.query.length)[self fetch];else[self showMessage:@"在上方输入关键词，点击键盘上的搜索"];
