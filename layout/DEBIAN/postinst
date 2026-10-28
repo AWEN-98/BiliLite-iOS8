@@ -1,12 +1,34 @@
 #!/bin/sh
-# Re-register the application icon on jailbroken legacy iOS.
-if [ -x /usr/bin/uicache ]; then
-  if [ -x /usr/bin/su ]; then
-    /usr/bin/su mobile -c /usr/bin/uicache >/dev/null 2>&1 || /usr/bin/uicache >/dev/null 2>&1 || true
+# Minimal post-install registration, compatible with legacy iOS 8.
+LOG=/var/mobile/Media/BiliLite-install.log
+{
+  echo "Bili Lite 0.1.2 postinst started"
+  date
+  if [ -f /Applications/BiliLite.app/Info.plist ]; then
+    echo "INFO_PLIST=FOUND"
   else
-    /usr/bin/uicache >/dev/null 2>&1 || true
+    echo "INFO_PLIST=MISSING"
   fi
-elif command -v uicache >/dev/null 2>&1; then
-  uicache >/dev/null 2>&1 || true
-fi
+  if [ -x /Applications/BiliLite.app/BiliLite ]; then
+    echo "EXECUTABLE=FOUND"
+  else
+    echo "EXECUTABLE=MISSING"
+  fi
+  if [ -x /usr/bin/uicache ]; then
+    echo "UICACHE=FOUND"
+    if [ -x /usr/bin/su ]; then
+      /usr/bin/su mobile -c /usr/bin/uicache
+      echo "UICACHE_EXIT=$?"
+    else
+      /usr/bin/uicache
+      echo "UICACHE_EXIT=$?"
+    fi
+  else
+    echo "UICACHE=MISSING"
+  fi
+  if [ -x /usr/bin/notifyutil ]; then
+    /usr/bin/notifyutil -p com.apple.mobile.application_installed || true
+  fi
+  echo "Bili Lite postinst finished"
+} >> "$LOG" 2>&1
 exit 0
