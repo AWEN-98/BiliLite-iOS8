@@ -1,8 +1,8 @@
 Package: com.finn.bililite
 Name: Bili Lite
-Version: 0.6.1
+Version: 0.6.2
 Architecture: iphoneos-arm
-Description: Native iOS 8 Bilibili client with QR account sign-in and Keychain session
+Description: Native iOS 8 Bilibili client with diagnostic QR account sign-in and Keychain session
 Maintainer: Finn
 Author: Finn
 Section: Multimedia
