@@ -29,14 +29,13 @@ jobs:
       - name: Compile and package
         run: |
           export THEOS="$HOME/theos"
-          chmod +x layout/DEBIAN/postinst layout/DEBIAN/postrm
           make clean package FINALPACKAGE=1 THEOS_PLATFORM_DEB_COMPRESSION_TYPE=gzip
       - name: Verify deb and build standard IPA
         run: |
           set -euo pipefail
           DEB="$(find packages -maxdepth 1 -name '*.deb' -print -quit)"
           test -n "$DEB"
-          test "$(dpkg-deb -f "$DEB" Version)" = "0.1.5"
+          test "$(dpkg-deb -f "$DEB" Version)" = "0.1.6"
           test "$(dpkg-deb -f "$DEB" Architecture)" = "iphoneos-arm"
           ar t "$DEB" | grep -Fx "data.tar.gz"
           mkdir -p /tmp/bililite-install
@@ -55,7 +54,7 @@ jobs:
           assert p["CFBundleIdentifier"] == "com.finn.bililite", p
           assert p["CFBundleExecutable"] == "BiliLite", p
           assert p["MinimumOSVersion"] == "8.0", p
-          assert p["CFBundleShortVersionString"] == "0.1.5", p
+          assert p["CFBundleShortVersionString"] == "0.1.6", p
           assert p["UIDeviceFamily"] == [1], p
           assert p["CFBundleSignature"] == "????", p
           assert p["CFBundleSupportedPlatforms"] == ["iPhoneOS"], p
@@ -63,17 +62,33 @@ jobs:
           PYTEST
           mkdir -p /tmp/bililite-ipa/Payload
           cp -a "$APP" /tmp/bililite-ipa/Payload/BiliLite.app
-          (cd /tmp/bililite-ipa && zip -qr -X "$GITHUB_WORKSPACE/packages/BiliLite-iOS8-v0.1.5.ipa" Payload)
-          unzip -t packages/BiliLite-iOS8-v0.1.5.ipa | tail -1
-          unzip -Z1 packages/BiliLite-iOS8-v0.1.5.ipa | grep -Fx "Payload/BiliLite.app/Info.plist"
+          (cd /tmp/bililite-ipa && zip -qr -X "$GITHUB_WORKSPACE/packages/BiliLite-iOS8-v0.1.6.ipa" Payload)
+          unzip -t packages/BiliLite-iOS8-v0.1.6.ipa | tail -1
+          unzip -Z1 packages/BiliLite-iOS8-v0.1.6.ipa | grep -Fx "Payload/BiliLite.app/Info.plist"
           dpkg-deb -c "$DEB" | grep -F "Applications/BiliLite.app/Info.plist"
-          dpkg-deb --ctrl-tarfile "$DEB" | tar -tf - | grep -F "postinst"
+          dpkg-deb --ctrl-tarfile "$DEB" | tar -tvf -
+          if dpkg-deb --ctrl-tarfile "$DEB" | tar -tf - | grep -E '(^|/)(postinst|preinst|postrm|prerm)
           echo "Both installable packaging formats verified."
           sha256sum packages/*.deb packages/*.ipa
       - name: Upload iOS 8 install files
         uses: actions/upload-artifact@v4
         with:
-          name: BiliLite-iOS8-v0.1.5-DEB-IPA
+          name: BiliLite-iOS8-v0.1.6-DEB-IPA
+          path: |
+            packages/*.deb
+            packages/*.ipa
+          if-no-files-found: error
+; then
+            echo "ERROR: package contains unwanted install scripts"
+            exit 1
+          fi
+          echo "Verified: no post-install or remove script"
+          echo "Both installable packaging formats verified."
+          sha256sum packages/*.deb packages/*.ipa
+      - name: Upload iOS 8 install files
+        uses: actions/upload-artifact@v4
+        with:
+          name: BiliLite-iOS8-v0.1.6-DEB-IPA
           path: |
             packages/*.deb
             packages/*.ipa
