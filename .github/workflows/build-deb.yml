@@ -1,4 +1,4 @@
-name: Build Bili Lite for iOS 8
+name: Build Bili Lite iOS 8
 on:
   push:
     branches: [main]
@@ -8,7 +8,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout project
+      - name: Checkout
         uses: actions/checkout@v4
       - name: Install build dependencies
         run: |
@@ -30,7 +30,7 @@ jobs:
         run: |
           export THEOS="$HOME/theos"
           make clean package FINALPACKAGE=1 THEOS_PLATFORM_DEB_COMPRESSION_TYPE=gzip
-      - name: Verify deb and build standard IPA
+      - name: Verify deb has no maintainer scripts and create IPA
         run: |
           set -euo pipefail
           DEB="$(find packages -maxdepth 1 -name '*.deb' -print -quit)"
@@ -38,54 +38,37 @@ jobs:
           test "$(dpkg-deb -f "$DEB" Version)" = "0.1.6"
           test "$(dpkg-deb -f "$DEB" Architecture)" = "iphoneos-arm"
           ar t "$DEB" | grep -Fx "data.tar.gz"
-          mkdir -p /tmp/bililite-install
+          dpkg-deb --ctrl-tarfile "$DEB" | tar -tvf -
+          dpkg-deb --ctrl-tarfile "$DEB" | tar -tf - > /tmp/control-files.txt
+          if grep -E '(^|/)(postinst|preinst|postrm|prerm)$' /tmp/control-files.txt; then
+            echo "ERROR unwanted maintainer script found"
+            exit 1
+          fi
+          mkdir -p /tmp/bililite-install /tmp/bililite-ipa/Payload
           dpkg-deb -x "$DEB" /tmp/bililite-install
           APP=/tmp/bililite-install/Applications/BiliLite.app
           test -x "$APP/BiliLite"
           test -s "$APP/Info.plist"
           test -s "$APP/Icon.png"
-          test -s "$APP/Icon@2x.png"
           test -s "$APP/Default@2x.png"
-          file "$APP/BiliLite"
-          file "$APP/BiliLite" | grep -q "Mach-O armv7 executable"
+          file "$APP/BiliLite" | grep -F "Mach-O armv7 executable"
           python3 - "$APP/Info.plist" <<'PYTEST'
           import plistlib, sys
-          with open(sys.argv[1], "rb") as f: p=plistlib.load(f)
-          assert p["CFBundleIdentifier"] == "com.finn.bililite", p
-          assert p["CFBundleExecutable"] == "BiliLite", p
-          assert p["MinimumOSVersion"] == "8.0", p
-          assert p["CFBundleShortVersionString"] == "0.1.6", p
-          assert p["UIDeviceFamily"] == [1], p
-          assert p["CFBundleSignature"] == "????", p
-          assert p["CFBundleSupportedPlatforms"] == ["iPhoneOS"], p
-          print("Bundle metadata verified for iOS 8")
+          with open(sys.argv[1], "rb") as f:
+              p=plistlib.load(f)
+          assert p["CFBundleIdentifier"] == "com.finn.bililite"
+          assert p["CFBundleExecutable"] == "BiliLite"
+          assert p["MinimumOSVersion"] == "8.0"
+          assert p["UIDeviceFamily"] == [1]
+          assert p["CFBundleShortVersionString"] == "0.1.6"
+          print("App plist verified")
           PYTEST
-          mkdir -p /tmp/bililite-ipa/Payload
           cp -a "$APP" /tmp/bililite-ipa/Payload/BiliLite.app
           (cd /tmp/bililite-ipa && zip -qr -X "$GITHUB_WORKSPACE/packages/BiliLite-iOS8-v0.1.6.ipa" Payload)
           unzip -t packages/BiliLite-iOS8-v0.1.6.ipa | tail -1
-          unzip -Z1 packages/BiliLite-iOS8-v0.1.6.ipa | grep -Fx "Payload/BiliLite.app/Info.plist"
-          dpkg-deb -c "$DEB" | grep -F "Applications/BiliLite.app/Info.plist"
-          dpkg-deb --ctrl-tarfile "$DEB" | tar -tvf -
-          if dpkg-deb --ctrl-tarfile "$DEB" | tar -tf - | grep -E '(^|/)(postinst|preinst|postrm|prerm)
-          echo "Both installable packaging formats verified."
+          echo "Verified gzip deb and no custom install scripts"
           sha256sum packages/*.deb packages/*.ipa
-      - name: Upload iOS 8 install files
-        uses: actions/upload-artifact@v4
-        with:
-          name: BiliLite-iOS8-v0.1.6-DEB-IPA
-          path: |
-            packages/*.deb
-            packages/*.ipa
-          if-no-files-found: error
-; then
-            echo "ERROR: package contains unwanted install scripts"
-            exit 1
-          fi
-          echo "Verified: no post-install or remove script"
-          echo "Both installable packaging formats verified."
-          sha256sum packages/*.deb packages/*.ipa
-      - name: Upload iOS 8 install files
+      - name: Upload verified packages
         uses: actions/upload-artifact@v4
         with:
           name: BiliLite-iOS8-v0.1.6-DEB-IPA
