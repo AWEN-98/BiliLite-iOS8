@@ -438,15 +438,15 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
 - (void)choosePart {
     if(!self.parts.count){BLAlert(self,@"暂无分P信息",@"请检查视频详情是否加载成功。");return;}
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"选择分P" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    // Limit each action sheet to 30 entries so it is usable on 3.5-inch iPhone screens.
+    // Keep only 8 actions per sheet for the 3.5-inch iPhone 4S screen.
     NSUInteger currentIndex=0;
     for(NSUInteger i=0;i<self.parts.count;i++)if([BLString(self.parts[i][@"cid"]) isEqualToString:self.selectedCID]){currentIndex=i;break;}
-    NSUInteger begin=(currentIndex/30)*30;
+    NSUInteger begin=(currentIndex/8)*8;
     [self fillPartMenu:menu start:begin];
     [self presentViewController:menu animated:YES completion:nil];
 }
 - (void)fillPartMenu:(UIAlertController *)menu start:(NSUInteger)begin {
-    NSUInteger end=MIN(self.parts.count,begin+30);
+    NSUInteger end=MIN(self.parts.count,begin+8);
     for(NSUInteger i=begin;i<end;i++){
         NSDictionary *part=self.parts[i];
         NSString *label=[NSString stringWithFormat:@"P%lu  %@",(unsigned long)(i+1),BLString(part[@"part"])];
@@ -461,7 +461,7 @@ static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     }]];
     if(begin>0)[menu addAction:[UIAlertAction actionWithTitle:@"上一组分P" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
         UIAlertController *prev=[UIAlertController alertControllerWithTitle:@"选择分P" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-        [self fillPartMenu:prev start:begin-30];[self presentViewController:prev animated:YES completion:nil];
+        [self fillPartMenu:prev start:begin-8];[self presentViewController:prev animated:YES completion:nil];
     }]];
     [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
 }
