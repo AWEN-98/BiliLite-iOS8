@@ -3,6 +3,7 @@
 #import <math.h>
 #import <CommonCrypto/CommonDigest.h>
 #include <string.h>
+#include <time.h>
 
 static UIColor *BLPink(void){return [UIColor colorWithRed:.93 green:.27 blue:.47 alpha:1];}
 static UIColor *BLBg(void){return [UIColor colorWithRed:.965 green:.972 blue:.985 alpha:1];}
@@ -108,7 +109,7 @@ static void BLSearch(NSString *term,NSInteger page,BLJSONCallback done){
     BLRequest(@"https://api.bilibili.com/x/web-interface/nav",^(NSDictionary *nav,NSError *navError){
         NSString *mixin=BLWBIKey(nav);
         if(mixin.length==32){
-            long long now=(long long)[[NSDate date] timeIntervalSince1970];
+            long long now=(long long)time(NULL);
             NSString *params=[NSString stringWithFormat:@"keyword=%@&page=%ld&search_type=video&wts=%lld",
               BLQueryEscape(term),(long)page,now];
             NSString *signBase=[params stringByAppendingString:mixin];
