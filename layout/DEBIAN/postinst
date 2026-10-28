@@ -1,8 +1,8 @@
 #!/bin/sh
-# Minimal post-install registration, compatible with legacy iOS 8.
+# Keep install successful even when a jailbreak lacks icon tools.
 LOG=/var/mobile/Media/BiliLite-install.log
-{
-  echo "Bili Lite 0.1.2 postinst started"
+(
+  echo "BiliLite 0.1.3 postinst"
   date
   if [ -f /Applications/BiliLite.app/Info.plist ]; then
     echo "INFO_PLIST=FOUND"
@@ -15,20 +15,10 @@ LOG=/var/mobile/Media/BiliLite-install.log
     echo "EXECUTABLE=MISSING"
   fi
   if [ -x /usr/bin/uicache ]; then
-    echo "UICACHE=FOUND"
-    if [ -x /usr/bin/su ]; then
-      /usr/bin/su mobile -c /usr/bin/uicache
-      echo "UICACHE_EXIT=$?"
-    else
-      /usr/bin/uicache
-      echo "UICACHE_EXIT=$?"
-    fi
+    /usr/bin/uicache >/dev/null 2>&1
+    echo "UICACHE_EXIT=$?"
   else
-    echo "UICACHE=MISSING"
+    echo "UICACHE=NOT_INSTALLED"
   fi
-  if [ -x /usr/bin/notifyutil ]; then
-    /usr/bin/notifyutil -p com.apple.mobile.application_installed || true
-  fi
-  echo "Bili Lite postinst finished"
-} >> "$LOG" 2>&1
+) >> "$LOG" 2>&1 || true
 exit 0
