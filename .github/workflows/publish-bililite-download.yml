@@ -20,23 +20,23 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/verified
-          gh run download 40778898228 -R AWEN-98/BiliLite-iOS8 -n 'BiliLite-iOS8-v0.4.0-DEB-IPA' -D /tmp/verified
+          gh run download 40780398080 -R AWEN-98/BiliLite-iOS8 -n 'BiliLite-iOS8-v0.5.0-DEB-IPA' -D /tmp/verified
           DEB="$(find /tmp/verified -maxdepth 2 -name '*.deb' -print -quit)"
           test -n "$DEB"
           test "$(dpkg-deb -f "$DEB" Architecture)" = "iphoneos-arm"
-          test "$(dpkg-deb -f "$DEB" Version)" = "0.4.0"
+          test "$(dpkg-deb -f "$DEB" Version)" = "0.5.0"
           ar t "$DEB" | grep -qx data.tar.gz
           mkdir -p downloads
-          cp "$DEB" "downloads/BiliLite-iOS8-v0.4.0.deb"
-          (cd downloads && zip -q -9 "BiliLite-iOS8-v0.4.0.zip" "BiliLite-iOS8-v0.4.0.deb")
-          unzip -t "downloads/BiliLite-iOS8-v0.4.0.zip"
-          sha256sum "downloads/BiliLite-iOS8-v0.4.0.deb" "downloads/BiliLite-iOS8-v0.4.0.zip"
+          cp "$DEB" "downloads/BiliLite-iOS8-v0.5.0.deb"
+          (cd downloads && zip -q -9 "BiliLite-iOS8-v0.5.0.zip" "BiliLite-iOS8-v0.5.0.deb")
+          unzip -t "downloads/BiliLite-iOS8-v0.5.0.zip"
+          sha256sum "downloads/BiliLite-iOS8-v0.5.0.deb" "downloads/BiliLite-iOS8-v0.5.0.zip"
       - name: Commit binary downloads for direct links
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add downloads/BiliLite-iOS8-v0.4.0.deb downloads/BiliLite-iOS8-v0.4.0.zip
+          git add downloads/BiliLite-iOS8-v0.5.0.deb downloads/BiliLite-iOS8-v0.5.0.zip
           if ! git diff --cached --quiet; then
             git commit -m "release: publish verified BiliLite direct download files [skip ci]"
             git push origin HEAD:main
