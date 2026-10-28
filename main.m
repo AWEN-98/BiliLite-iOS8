@@ -75,6 +75,7 @@ static NSString *const BLAccountKey=@"session";
 static NSDictionary *BLSession(void){
     NSDictionary *query=@{(__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
       (__bridge id)kSecAttrService:BLAccountService,(__bridge id)kSecAttrAccount:BLAccountKey,
+      (__bridge id)kSecAttrAccessGroup:@"com.finn.bililite",
       (__bridge id)kSecReturnData:@YES,(__bridge id)kSecMatchLimit:(__bridge id)kSecMatchLimitOne};
     CFTypeRef answer=NULL;
     OSStatus status=SecItemCopyMatching((__bridge CFDictionaryRef)query,&answer);
@@ -83,26 +84,85 @@ static NSDictionary *BLSession(void){
     id saved=[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
     return [saved isKindOfClass:[NSDictionary class]]?saved:nil;
 }
-static BOOL BLSaveSession(NSDictionary *values){
+static NSString *const BLKeychainGroup=@"com.finn.bililite";
+static NSDictionary *BLKeychainMatch(NSString *account){
+    return @{(__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
+      (__bridge id)kSecAttrService:BLAccountService,
+      (__bridge id)kSecAttrAccount:account,
+      (__bridge id)kSecAttrAccessGroup:BLKeychainGroup};
+}
+static OSStatus BLWriteKeychain(NSString *account,NSData *data){
+    if(!data.length)return errSecParam;
+    NSDictionary *match=BLKeychainMatch(account);
+    // Update first. Avoid deleting a valid account secret until replacement
+    // is successfully written.
+    OSStatus update=SecItemUpdate((__bridge CFDictionaryRef)match,
+        (__bridge CFDictionaryRef)@{(__bridge id)kSecValueData:data});
+    if(update==errSecSuccess)return update;
+    if(update!=errSecItemNotFound)return update;
+    NSMutableDictionary *newItem=[match mutableCopy];
+    newItem[(__bridge id)kSecValueData]=data;
+    newItem[(__bridge id)kSecAttrAccessible]=(__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
+    return SecItemAdd((__bridge CFDictionaryRef)newItem,NULL);
+}
+static OSStatus BLKeychainCheck(void){
+    // Probe only with nonsecret test data. Never persist session material
+    // outside the keychain.
+    NSString *probe=@"keychain-self-check";
+    NSData *data=[@"ok" dataUsingEncoding:NSUTF8StringEncoding];
+    OSStatus status=BLWriteKeychain(probe,data);
+    if(status==errSecSuccess){
+        NSMutableDictionary *query=[BLKeychainMatch(probe) mutableCopy];
+        query[(__bridge id)kSecReturnData]=@YES;
+        query[(__bridge id)kSecMatchLimit]=(__bridge id)kSecMatchLimitOne;
+        CFTypeRef returned=NULL;
+        status=SecItemCopyMatching((__bridge CFDictionaryRef)query,&returned);
+        NSData *value=returned?CFBridgingRelease(returned):nil;
+        if(status==errSecSuccess && ![value isEqualToData:data])status=errSecInternalComponent;
+    }
+    SecItemDelete((__bridge CFDictionaryRef)BLKeychainMatch(probe));
+    return status;
+}
+static OSStatus BLSaveSession(NSDictionary *values){
     NSMutableDictionary *safe=[NSMutableDictionary dictionary];
     for(NSString *name in @[@"SESSDATA",@"DedeUserID",@"DedeUserID__ckMd5",@"bili_jct",@"sid"]){
-        NSString *value=BLString(values[name]);if(value.length)safe[name]=value;
+        NSString *value=BLString(values[name]);
+        if(value.length)safe[name]=value;
     }
-    if(!BLString(safe[@"SESSDATA"]).length)return NO;
+    if(!BLString(safe[@"SESSDATA"]).length)return errSecParam;
     NSData *data=[NSJSONSerialization dataWithJSONObject:safe options:0 error:NULL];
-    if(!data)return NO;
-    NSDictionary *match=@{(__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService:BLAccountService,(__bridge id)kSecAttrAccount:BLAccountKey};
-    SecItemDelete((__bridge CFDictionaryRef)match);
-    NSMutableDictionary *entry=[match mutableCopy];
-    entry[(__bridge id)kSecValueData]=data;
-    entry[(__bridge id)kSecAttrAccessible]=(__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
-    return SecItemAdd((__bridge CFDictionaryRef)entry,NULL)==errSecSuccess;
+    if(!data)return errSecParam;
+    OSStatus status=BLWriteKeychain(BLAccountKey,data);
+    if(status!=errSecSuccess)return status;
+    NSDictionary *readback=BLSession();
+    return [BLString(readback[@"SESSDATA"]) isEqualToString:BLString(safe[@"SESSDATA"])]?errSecSuccess:errSecDecode;
+}
+static NSString *BLKeychainError(OSStatus code){
+    if(code==errSecMissingEntitlement)return @"钥匙串签名权限缺失（-34018），安装包可能没有正确签名。";
+    if(code==errSecInteractionNotAllowed)return @"钥匙串当前不可访问（-25308），请解锁手机后重试。";
+    if(code==errSecNotAvailable)return @"系统钥匙串服务不可用（-25291），请尝试重新打开应用。";
+    if(code==errSecParam)return @"登录 Cookie 不完整，缺少 SESSDATA。";
+    return [NSString stringWithFormat:@"钥匙串保存/回读失败，错误代码 %ld。",(long)code];
+}
+static NSDictionary *BLSessionFromPoll(NSDictionary *responseCookies,NSString *redirect){
+    NSMutableDictionary *values=[responseCookies mutableCopy]?:[NSMutableDictionary dictionary];
+    NSURLComponents *components=redirect.length?[NSURLComponents componentsWithString:redirect]:nil;
+    NSString *host=[components.host lowercaseString];
+    // Do not navigate to the cross-domain URL; only read the query fields
+    // returned by the official passport API. Never send session cookies to biligame.
+    if([components.scheme isEqualToString:@"https"] &&
+        ([host isEqualToString:@"passport.biligame.com"] ||
+         [host isEqualToString:@"passport.bilibili.com"] ||
+         [host isEqualToString:@"www.bilibili.com"])){
+        for(NSURLQueryItem *item in components.queryItems){
+            if([@[@"SESSDATA",@"bili_jct",@"DedeUserID",@"DedeUserID__ckMd5",@"sid"] containsObject:item.name] && item.value.length)
+                values[item.name]=item.value;
+        }
+    }
+    return values;
 }
 static void BLClearSession(void){
-    NSDictionary *match=@{(__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
-       (__bridge id)kSecAttrService:BLAccountService,(__bridge id)kSecAttrAccount:BLAccountKey};
-    SecItemDelete((__bridge CFDictionaryRef)match);
+    SecItemDelete((__bridge CFDictionaryRef)BLKeychainMatch(BLAccountKey));
     NSHTTPCookieStorage *storage=[NSHTTPCookieStorage sharedHTTPCookieStorage];
     for(NSHTTPCookie *cookie in storage.cookies){
         if([cookie.domain hasSuffix:@".bilibili.com"] || [cookie.domain isEqualToString:@"bilibili.com"])
@@ -123,6 +183,7 @@ static NSDictionary *BLCookiesFromResponse(NSHTTPURLResponse *response){
     NSURL *url=response.URL?:[NSURL URLWithString:@"https://passport.bilibili.com"];
     NSMutableArray *cookies=[NSMutableArray array];
     [cookies addObjectsFromArray:[[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:url]?:@[]];
+    [cookies addObjectsFromArray:[[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:[NSURL URLWithString:@"https://www.bilibili.com/"]]?:@[]];
     if(response.allHeaderFields.count){
         [cookies addObjectsFromArray:[NSHTTPCookie cookiesWithResponseHeaderFields:response.allHeaderFields forURL:url]?:@[]];
     }
@@ -1145,6 +1206,14 @@ static NSString *BLHLS(NSDictionary *json){
 - (void)dealloc {[self stopPolling];}
 - (void)generateQR {
     [self stopPolling];
+    OSStatus check=BLKeychainCheck();
+    if(check!=errSecSuccess){
+        self.qrView.image=nil;
+        self.status.text=[NSString stringWithFormat:@"登录准备失败\n%@",BLKeychainError(check)];
+        [self.reloadButton setTitle:@"重新检测钥匙串" forState:UIControlStateNormal];
+        self.reloadButton.enabled=YES;
+        return;
+    }
     [self.reloadButton setTitle:@"二维码获取中…" forState:UIControlStateNormal];
     self.reloadButton.enabled=NO;self.status.text=@"正在连接 B 站登录服务";
     self.qrView.image=nil;
@@ -1190,17 +1259,16 @@ static NSString *BLHLS(NSDictionary *json){
             [self stopPolling];self.status.text=@"二维码已失效，请刷新";return;
         }
         if(resultCode==0){
-            NSMutableDictionary *session=[cookies mutableCopy]?:[NSMutableDictionary dictionary];
-            // Some Bilibili deployments include login cookies in the returned SSO URL.
-            NSString *redirect=BLString(data[@"url"]);
-            NSURLComponents *components=redirect.length?[NSURLComponents componentsWithString:redirect]:nil;
-            for(NSURLQueryItem *item in components.queryItems){
-                if([@[@"SESSDATA",@"bili_jct",@"DedeUserID",@"DedeUserID__ckMd5",@"sid"] containsObject:item.name] && item.value.length)
-                    session[item.name]=item.value;
-            }
-            if(!BLSaveSession(session)){
+            NSDictionary *session=BLSessionFromPoll(cookies,BLString(data[@"url"]));
+            if(!BLString(session[@"SESSDATA"]).length){
                 [self stopPolling];
-                self.status.text=@"扫码已确认，但未取得有效登录 Cookie，或钥匙串写入失败。请重新扫描。";
+                self.status.text=@"扫码已确认（阶段 1/3）\n但响应未包含 SESSDATA。请刷新二维码后再试。";
+                return;
+            }
+            OSStatus saved=BLSaveSession(session);
+            if(saved!=errSecSuccess){
+                [self stopPolling];
+                self.status.text=[NSString stringWithFormat:@"扫码已确认（阶段 2/3）\n%@",BLKeychainError(saved)];
                 return;
             }
             [self stopPolling];
