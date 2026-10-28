@@ -138,7 +138,7 @@ static OSStatus BLSaveSession(NSDictionary *values){
     return [BLString(readback[@"SESSDATA"]) isEqualToString:BLString(safe[@"SESSDATA"])]?errSecSuccess:errSecDecode;
 }
 static NSString *BLKeychainError(OSStatus code){
-    if(code==errSecMissingEntitlement)return @"钥匙串签名权限缺失（-34018），安装包可能没有正确签名。";
+    if(code==(OSStatus)-34018)return @"钥匙串签名权限缺失（-34018），安装包可能没有正确签名。";
     if(code==errSecInteractionNotAllowed)return @"钥匙串当前不可访问（-25308），请解锁手机后重试。";
     if(code==errSecNotAvailable)return @"系统钥匙串服务不可用（-25291），请尝试重新打开应用。";
     if(code==errSecParam)return @"登录 Cookie 不完整，缺少 SESSDATA。";
