@@ -154,20 +154,33 @@ static UIImage *BLQRImage(NSString *text){
     CIFilter *filter=[CIFilter filterWithName:@"CIQRCodeGenerator"];
     [filter setValue:utf8 forKey:@"inputMessage"];
     [filter setValue:@"M" forKey:@"inputCorrectionLevel"];
-    CIImage *input=[filter outputImage];
+    CIImage *input=filter.outputImage;
     if(!input)return nil;
     CIContext *context=[CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer:@YES}];
     CGImageRef bitmap=[context createCGImage:input fromRect:input.extent];
     if(!bitmap)return nil;
-    UIImage *qr=[UIImage imageWithCGImage:bitmap];
-    CGImageRelease(bitmap);
-    UIGraphicsBeginImageContextWithOptions(CGSizeMake(228,228),YES,1);
+    size_t modules=CGImageGetWidth(bitmap);
+    if(modules==0){CGImageRelease(bitmap);return nil;}
+    UIImage *matrix=[UIImage imageWithCGImage:bitmap];
+    // QR edges need an intact white quiet zone. Integer pixel scaling keeps
+    // every module square and avoids blurred or apparently cropped edges.
+    const CGFloat canvas=216.0f;
+    const CGFloat screenScale=2.0f; // iPhone 4S Retina
+    const CGFloat quiet=16.0f;
+    NSInteger pixelModule=(NSInteger)floorf((canvas-quiet*2)*screenScale/(CGFloat)modules);
+    if(pixelModule<1)pixelModule=1;
+    CGFloat drawn=((CGFloat)modules*(CGFloat)pixelModule)/screenScale;
+    if(drawn>canvas-quiet*2){drawn=canvas-quiet*2;}
+    CGFloat inset=floorf((canvas-drawn)/2.0f*screenScale)/screenScale;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(canvas,canvas),YES,screenScale);
     CGContextRef graphic=UIGraphicsGetCurrentContext();
     CGContextSetInterpolationQuality(graphic,kCGInterpolationNone);
-    [[UIColor whiteColor] setFill];UIRectFill(CGRectMake(0,0,228,228));
-    [qr drawInRect:CGRectMake(12,12,204,204)];
+    [[UIColor whiteColor] setFill];
+    UIRectFill(CGRectMake(0,0,canvas,canvas));
+    [matrix drawInRect:CGRectMake(inset,inset,drawn,drawn)];
     UIImage *result=UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
+    CGImageRelease(bitmap);
     return result;
 }
 
@@ -1017,6 +1030,7 @@ static NSString *BLHLS(NSDictionary *json){
 
 
 @interface BLQRLoginController : UIViewController
+@property(nonatomic,strong) UIScrollView *scroller;
 @property(nonatomic,strong) UIImageView *qrView;
 @property(nonatomic,strong) UILabel *status;
 @property(nonatomic,strong) UILabel *instructions;
@@ -1028,33 +1042,87 @@ static NSString *BLHLS(NSDictionary *json){
 @end
 @implementation BLQRLoginController
 - (void)viewDidLoad {
-    [super viewDidLoad];self.title=@"扫码登录 B 站";
+    [super viewDidLoad];
+    self.title=@"扫码登录 B 站";
+    // iOS 8 UINavigationController extends content behind its translucent
+    // 44pt navigation bar unless we opt out. That clipped the QR's top edge.
+    self.edgesForExtendedLayout=UIRectEdgeNone;
+    self.automaticallyAdjustsScrollViewInsets=NO;
     self.view.backgroundColor=BLBg();
     CGFloat w=self.view.bounds.size.width;
-    self.qrView=[[UIImageView alloc] initWithFrame:CGRectMake(MAX(0,(w-228)/2),14,228,228)];
+    CGFloat h=self.view.bounds.size.height;
+    UIScrollView *scroll=[[UIScrollView alloc] initWithFrame:self.view.bounds];
+    scroll.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    scroll.backgroundColor=BLBg();
+    scroll.alwaysBounceVertical=YES;
+    self.scroller=scroll;
+    [self.view addSubview:scroll];
+    CGFloat side=MIN(216.0f,MAX(178.0f,h-204.0f));
+    CGFloat qrY=10;
+    self.qrView=[[UIImageView alloc] initWithFrame:CGRectMake(floorf((w-side)/2),qrY,side,side)];
     self.qrView.backgroundColor=[UIColor whiteColor];
     self.qrView.contentMode=UIViewContentModeScaleAspectFit;
-    self.qrView.layer.cornerRadius=12;self.qrView.clipsToBounds=YES;
-    [self.view addSubview:self.qrView];
-    self.status=[[UILabel alloc] initWithFrame:CGRectMake(14,249,w-28,53)];
-    self.status.textColor=BLInk();self.status.textAlignment=NSTextAlignmentCenter;
-    self.status.numberOfLines=3;self.status.font=[UIFont boldSystemFontOfSize:13];
-    [self.view addSubview:self.status];
+    self.qrView.layer.cornerRadius=4;
+    self.qrView.clipsToBounds=NO; // Never crop any corner/white quiet zone.
+    self.qrView.userInteractionEnabled=YES;
+    [self.qrView addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(showLargeQR)]];
+    [scroll addSubview:self.qrView];
+    CGFloat y=qrY+side+6;
+    self.status=[[UILabel alloc] initWithFrame:CGRectMake(12,y,w-24,40)];
+    self.status.textColor=BLInk();
+    self.status.textAlignment=NSTextAlignmentCenter;
+    self.status.numberOfLines=2;
+    self.status.font=[UIFont boldSystemFontOfSize:13];
+    [scroll addSubview:self.status];
+    y+=47;
     self.reloadButton=[UIButton buttonWithType:UIButtonTypeCustom];
-    self.reloadButton.frame=CGRectMake(14,307,w-28,42);
+    self.reloadButton.frame=CGRectMake(16,y,w-32,40);
     [self.reloadButton setTitle:@"生成登录二维码" forState:UIControlStateNormal];
     self.reloadButton.backgroundColor=BLPink();
     self.reloadButton.layer.cornerRadius=9;
     [self.reloadButton addTarget:self action:@selector(generateQR) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.reloadButton];
-    self.instructions=[[UILabel alloc] initWithFrame:CGRectMake(15,355,w-30,76)];
-    self.instructions.text=@"用另一台已登录 B 站的手机 App 扫描上方二维码，再在那台手机确认授权。\n二维码有效期约 3 分钟。";
+    [scroll addSubview:self.reloadButton];
+    y+=46;
+    self.instructions=[[UILabel alloc] initWithFrame:CGRectMake(17,y,w-34,70)];
+    self.instructions.text=@"使用另一台已登录 B 站的手机 App 扫描二维码并确认。\n轻点二维码可放大 · 约 3 分钟有效";
+    self.instructions.textAlignment=NSTextAlignmentCenter;
     self.instructions.font=[UIFont systemFontOfSize:12];
     self.instructions.numberOfLines=4;
     self.instructions.textColor=[UIColor grayColor];
-    [self.view addSubview:self.instructions];
+    [scroll addSubview:self.instructions];
+    scroll.contentSize=CGSizeMake(w,MAX(y+82,h+8));
     [self generateQR];
 }
+- (void)showLargeQR {
+    if(!self.qrView.image)return;
+    UIViewController *large=[UIViewController new];
+    large.view.backgroundColor=[UIColor colorWithRed:.10 green:.11 blue:.15 alpha:1];
+    CGFloat w=large.view.bounds.size.width;
+    CGFloat side=MIN(304.0f,MAX(1,w-16));
+    UIImageView *image=[[UIImageView alloc] initWithFrame:CGRectMake(floorf((w-side)/2),MAX(38,(large.view.bounds.size.height-side)/2-18),side,side)];
+    image.image=self.qrView.image;
+    image.backgroundColor=[UIColor whiteColor];
+    image.contentMode=UIViewContentModeScaleAspectFit;
+    image.autoresizingMask=UIViewAutoresizingFlexibleTopMargin|UIViewAutoresizingFlexibleBottomMargin|UIViewAutoresizingFlexibleLeftMargin|UIViewAutoresizingFlexibleRightMargin;
+    [large.view addSubview:image];
+    UILabel *hint=[[UILabel alloc] initWithFrame:CGRectMake(0,large.view.bounds.size.height-66,w,42)];
+    hint.text=@"点击屏幕返回扫码页面";
+    hint.textAlignment=NSTextAlignmentCenter;
+    hint.textColor=[UIColor whiteColor];
+    hint.font=[UIFont systemFontOfSize:13];
+    hint.autoresizingMask=UIViewAutoresizingFlexibleTopMargin;
+    [large.view addSubview:hint];
+    UIButton *dismiss=[UIButton buttonWithType:UIButtonTypeCustom];
+    dismiss.frame=large.view.bounds;
+    dismiss.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    [dismiss addTarget:self action:@selector(closeLargeQR) forControlEvents:UIControlEventTouchUpInside];
+    [large.view addSubview:dismiss];
+    [self presentViewController:large animated:YES completion:nil];
+}
+- (void)closeLargeQR {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
 - (void)stopPolling {
     [self.timer invalidate];self.timer=nil;self.qrKey=nil;self.expiresAt=0;
 }
