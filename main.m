@@ -37,7 +37,8 @@ static NSMutableDictionary *BLNormalize(NSDictionary *d){
        @"pic":[BLString(d[@"pic"]) hasPrefix:@"//"]?[@"https:" stringByAppendingString:BLString(d[@"pic"])]:BLString(d[@"pic"]),@"author":BLString(d[@"author"]).length?BLString(d[@"author"]):BLString(owner[@"name"]),
        @"desc":BLString(d[@"desc"]),@"cid":BLString(d[@"cid"]),@"aid":BLString(d[@"aid"]),
        @"duration":BLString(d[@"duration"]),@"view":BLString(d[@"play"]).length?BLString(d[@"play"]):BLString(stat[@"view"]),
-       @"like":BLString(stat[@"like"]),@"favorite":BLString(stat[@"favorite"])} mutableCopy];
+       @"like":BLString(stat[@"like"]),@"favorite":BLString(stat[@"favorite"]),
+       @"reason":BLString([d[@"rcmd_reason"] isKindOfClass:[NSDictionary class]]?d[@"rcmd_reason"][@"content"]:@"")} mutableCopy];
 }
 static NSArray *BLStored(NSString *key){
     id rows=[[NSUserDefaults standardUserDefaults] arrayForKey:key];
@@ -331,6 +332,59 @@ static void BLSearch(NSString *term,NSInteger page,BLJSONCallback done){
         }
     });
 }
+
+// Personalized home-feed data. Uses the signed web feed (same session as
+// login), not the public popularity chart. Only return ordinary videos.
+static NSArray *BLRecommendationVideos(NSDictionary *json){
+    NSDictionary *data=[json[@"data"] isKindOfClass:[NSDictionary class]]?json[@"data"]:@{};
+    NSArray *rows=[data[@"item"] isKindOfClass:[NSArray class]]?data[@"item"]:@[];
+    NSMutableArray *videos=[NSMutableArray array];
+    for(id item in rows){
+        if(![item isKindOfClass:[NSDictionary class]])continue;
+        NSString *type=BLString(item[@"goto"]);
+        // Exclude sponsored banners, live rooms and non-video cards.
+        if(![type isEqualToString:@"av"] && ![type isEqualToString:@"video"])continue;
+        if(!BLBV(BLString(item[@"bvid"])).length)continue;
+        [videos addObject:item];
+        if(videos.count>=20)break;
+    }
+    return videos;
+}
+static void BLRecommend(NSInteger freshIndex,BLJSONCallback done){
+    // The login cookie is automatically attached to api.bilibili.com
+    // by BLRequest; recommendation ranking then uses the logged-in account.
+    BLRequest(@"https://api.bilibili.com/x/web-interface/nav",^(NSDictionary *nav,NSError *navError){
+        NSString *key=BLWBIKey(nav);
+        if(key.length!=32){
+            // Legacy API sometimes remains available to old devices.
+            NSString *fallback=[NSString stringWithFormat:@"https://api.bilibili.com/x/web-interface/index/top/rcmd?version=1&fresh_type=4&ps=12&fresh_idx=%ld",(long)freshIndex];
+            BLRequest(fallback,done);
+            return;
+        }
+        long long now=(long long)time(NULL);
+        // Sort keys lexicographically for WBI MD5 signing.
+        NSString *params=[NSString stringWithFormat:@"brush=%ld&feed_version=V8&fresh_idx=%ld&fresh_idx_1h=%ld&fresh_type=4&homepage_ver=1&ps=12&web_location=1430650&wts=%lld",
+            (long)freshIndex,(long)freshIndex,(long)freshIndex,now];
+        NSString *message=[params stringByAppendingString:key];
+        unsigned char digest[CC_MD5_DIGEST_LENGTH];
+        const char *utf8=[message UTF8String];
+        CC_MD5(utf8,(CC_LONG)strlen(utf8),digest);
+        NSMutableString *signature=[NSMutableString stringWithCapacity:32];
+        for(NSUInteger i=0;i<CC_MD5_DIGEST_LENGTH;i++)[signature appendFormat:@"%02x",digest[i]];
+        NSString *url=[NSString stringWithFormat:@"https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd?%@&w_rid=%@",params,signature];
+        BLRequest(url,^(NSDictionary *json,NSError *error){
+            if(!error && [json[@"code"] integerValue]==0 && BLRecommendationVideos(json).count){
+                done(json,nil);return;
+            }
+            NSString *fallback=[NSString stringWithFormat:@"https://api.bilibili.com/x/web-interface/index/top/rcmd?version=1&fresh_type=4&ps=12&fresh_idx=%ld",(long)freshIndex];
+            BLRequest(fallback,^(NSDictionary *other,NSError *otherError){
+                if(!otherError && [other[@"code"] integerValue]==0 && BLRecommendationVideos(other).count)done(other,nil);
+                else done(json?:other,error?:otherError);
+            });
+        });
+    });
+}
+
 static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
     view.image=nil;
     if(![address hasPrefix:@"https://"] && ![address hasPrefix:@"http://"])return;
