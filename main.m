@@ -1848,7 +1848,10 @@ static NSString *BLHLS(NSDictionary *json){
     }
     NSDictionary *video=self.items[index.row];
     ((UILabel *)[cell.contentView viewWithTag:912]).text=video[@"title"];
-    ((UILabel *)[cell.contentView viewWithTag:913]).text=[NSString stringWithFormat:@"%@ · %@",video[@"author"]?:@"",video[@"view"]?:@""];
+    NSString *reason=BLString(video[@"reason"]);
+    ((UILabel *)[cell.contentView viewWithTag:913]).text=reason.length && self.mode==0?
+        [NSString stringWithFormat:@"%@ · %@",reason,BLString(video[@"author"])]:
+        [NSString stringWithFormat:@"%@ · %@",video[@"author"]?:@"",video[@"view"]?:@""];
     UIImageView *cover=[cell.contentView viewWithTag:911];
     cover.accessibilityIdentifier=video[@"pic"];BLFetchImage(video[@"pic"],cover,self.imageCache);
     return cell;
