@@ -903,7 +903,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 - (void)tick {
     BOOL play=[self playing];
     [self.toggleButton setTitle:play?@"Ⅱ":@"▶" forState:UIControlStateNormal];
-    self.toggleButton.alpha=play && !self.expanded?.0:1;
+    self.toggleButton.alpha=(play && !self.expanded)?0:1;
     self.toggleButton.userInteractionEnabled=!play||self.expanded;
     self.bottom.alpha=(play && !self.expanded)?0:1;
     self.bottom.userInteractionEnabled=!play||self.expanded;
@@ -984,6 +984,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 
 @interface BLDetailController : UIViewController <UITableViewDataSource,UITableViewDelegate>
 @property(nonatomic,strong) NSDictionary *video;
+@property(nonatomic,strong) BLInlinePlayer *inlinePlayer;
 @property(nonatomic,strong) UILabel *titleLabel;
 @property(nonatomic,strong) UILabel *meta;
 @property(nonatomic,strong) UITextView *descriptionBox;
@@ -999,53 +1000,142 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 @property(nonatomic,strong) UIButton *qualityButton;
 @property(nonatomic,strong) NSArray *parts;
 @property(nonatomic,copy) NSString *selectedCID;
+@property(nonatomic,copy) NSString *activeCID;
+@property(nonatomic,assign) NSUInteger requestSerial;
 @property(nonatomic,assign) NSInteger quality;
+@property(nonatomic,assign) BOOL hasRequestedVideo;
+@property(nonatomic,assign) BOOL presentingFullscreen;
+@property(nonatomic,assign) BOOL wasPlayingBeforeLeave;
 @end
 @implementation BLDetailController
 - (instancetype)initWithVideo:(NSDictionary *)video {
-    if((self=[super init])){self.video=video?:@{};self.related=@[];self.parts=@[];self.quality=16;self.selectedCID=BLString(video[@"cid"]);self.imageCache=[NSCache new];self.imageCache.countLimit=15;}
+    if((self=[super init])){
+        self.video=video?:@{};self.related=@[];self.parts=@[];self.quality=16;
+        self.selectedCID=BLString(video[@"cid"]);
+        self.imageCache=[NSCache new];self.imageCache.countLimit=12;
+    }
     return self;
 }
 - (UIButton *)button:(NSString *)title x:(CGFloat)x y:(CGFloat)y w:(CGFloat)w action:(SEL)action {
-    UIButton *b=[UIButton buttonWithType:UIButtonTypeCustom];b.frame=CGRectMake(x,y,w,38);
-    b.layer.cornerRadius=9;b.backgroundColor=BLPink();b.titleLabel.font=[UIFont boldSystemFontOfSize:13];
-    [b setTitle:title forState:UIControlStateNormal];[b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];[self.scroll addSubview:b];return b;
+    UIButton *b=[UIButton buttonWithType:UIButtonTypeCustom];b.frame=CGRectMake(x,y,w,37);
+    b.layer.cornerRadius=8;
+    b.backgroundColor=[UIColor whiteColor];
+    b.layer.borderWidth=.5;
+    b.layer.borderColor=[UIColor colorWithWhite:.87 alpha:1].CGColor;
+    b.titleLabel.font=[UIFont systemFontOfSize:12];
+    [b setTitle:title forState:UIControlStateNormal];
+    [b setTitleColor:BLInk() forState:UIControlStateNormal];
+    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    [self.scroll addSubview:b];return b;
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title=@"视频详情";self.view.backgroundColor=BLBg();
-    CGFloat w=self.view.bounds.size.width;
-    self.scroll=[[UIScrollView alloc] initWithFrame:self.view.bounds];
+    self.edgesForExtendedLayout=UIRectEdgeNone;
+    self.title=@"视频";
+    self.view.backgroundColor=BLBg();
+    CGFloat w=self.view.bounds.size.width,h=self.view.bounds.size.height;
+    CGFloat videoHeight=roundf(w*9.0f/16.0f);
+    self.inlinePlayer=[[BLInlinePlayer alloc] initWithFrame:CGRectMake(0,0,w,videoHeight)];
+    self.inlinePlayer.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+    __weak BLDetailController *weakSelf=self;
+    self.inlinePlayer.fullScreenAction=^{[weakSelf showFullscreen];};
+    self.inlinePlayer.retryAction=^{[weakSelf playTapped];};
+    [self.view addSubview:self.inlinePlayer];
+    self.cover=self.inlinePlayer.poster;
+    self.scroll=[[UIScrollView alloc] initWithFrame:CGRectMake(0,videoHeight,w,MAX(1,h-videoHeight))];
     self.scroll.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-    [self.view addSubview:self.scroll];self.scroll.contentSize=CGSizeMake(w,765);
-    self.cover=[[UIImageView alloc] initWithFrame:CGRectMake(12,10,w-24,153)];
-    self.cover.backgroundColor=[UIColor colorWithWhite:.88 alpha:1];
-    self.cover.contentMode=UIViewContentModeScaleAspectFit;[self.scroll addSubview:self.cover];
-    self.titleLabel=[[UILabel alloc] initWithFrame:CGRectMake(12,173,w-24,56)];
+    self.scroll.backgroundColor=BLBg();
+    self.scroll.contentSize=CGSizeMake(w,565);
+    [self.view addSubview:self.scroll];
+
+    self.titleLabel=[[UILabel alloc] initWithFrame:CGRectMake(13,10,w-26,57)];
     self.titleLabel.textColor=BLInk();self.titleLabel.numberOfLines=2;
     self.titleLabel.font=[UIFont boldSystemFontOfSize:16];[self.scroll addSubview:self.titleLabel];
-    self.meta=[[UILabel alloc] initWithFrame:CGRectMake(12,228,w-24,45)];
-    self.meta.font=[UIFont systemFontOfSize:12];self.meta.numberOfLines=2;
+    self.meta=[[UILabel alloc] initWithFrame:CGRectMake(13,70,w-26,36)];
+    self.meta.font=[UIFont systemFontOfSize:11];self.meta.numberOfLines=2;
     self.meta.textColor=[UIColor grayColor];[self.scroll addSubview:self.meta];
-    self.playButton=[self button:@"全屏播放" x:12 y:279 w:104 action:@selector(playTapped)];
-    self.favoriteButton=[self button:@"☆ 收藏" x:124 y:279 w:84 action:@selector(toggleFavorite)];
-    [self button:@"复制链接" x:216 y:279 w:w-228 action:@selector(copyLink)];
-    self.descriptionBox=[[UITextView alloc] initWithFrame:CGRectMake(12,329,w-24,80)];
-    self.descriptionBox.editable=NO;self.descriptionBox.font=[UIFont systemFontOfSize:12];
-    self.descriptionBox.textColor=BLInk();self.descriptionBox.backgroundColor=[UIColor whiteColor];
-    self.descriptionBox.layer.cornerRadius=8;[self.scroll addSubview:self.descriptionBox];
-    self.partButton=[self button:@"选集 P1" x:12 y:420 w:90 action:@selector(choosePart)];
-    self.qualityButton=[self button:@"清晰度 360P" x:107 y:420 w:107 action:@selector(chooseQuality)];
-    [self button:@"评论" x:219 y:420 w:w-231 action:@selector(openComments)];
-    UILabel *relatedLabel=[[UILabel alloc] initWithFrame:CGRectMake(12,468,w-24,30)];
-    relatedLabel.text=@"相关推荐";relatedLabel.font=[UIFont boldSystemFontOfSize:17];
+
+    self.favoriteButton=[self button:@"☆ 收藏" x:12 y:114 w:89 action:@selector(toggleFavorite)];
+    [self button:@"复制链接" x:107 y:114 w:93 action:@selector(copyLink)];
+    [self button:@"评论" x:206 y:114 w:w-218 action:@selector(openComments)];
+    self.descriptionBox=[[UITextView alloc] initWithFrame:CGRectMake(12,159,w-24,85)];
+    self.descriptionBox.editable=NO;
+    self.descriptionBox.font=[UIFont systemFontOfSize:12];
+    self.descriptionBox.textColor=BLInk();
+    self.descriptionBox.backgroundColor=[UIColor whiteColor];
+    self.descriptionBox.layer.cornerRadius=8;
+    [self.scroll addSubview:self.descriptionBox];
+
+    self.partButton=[self button:@"P1 选集" x:12 y:255 w:143 action:@selector(choosePart)];
+    self.qualityButton=[self button:@"360P 画质" x:165 y:255 w:w-177 action:@selector(chooseQuality)];
+
+    UILabel *relatedLabel=[[UILabel alloc] initWithFrame:CGRectMake(13,305,w-26,29)];
+    relatedLabel.text=@"相关推荐";relatedLabel.font=[UIFont boldSystemFontOfSize:15];
     relatedLabel.textColor=BLInk();[self.scroll addSubview:relatedLabel];
-    self.relatedTable=[[UITableView alloc] initWithFrame:CGRectMake(10,505,w-20,233) style:UITableViewStylePlain];
+    self.relatedTable=[[UITableView alloc] initWithFrame:CGRectMake(10,340,w-20,228) style:UITableViewStylePlain];
     self.relatedTable.dataSource=self;self.relatedTable.delegate=self;
     self.relatedTable.rowHeight=57;self.relatedTable.scrollEnabled=NO;
     self.relatedTable.layer.cornerRadius=8;[self.scroll addSubview:self.relatedTable];
-    [self render];[self loadDetails];
+    [self render];
+    [self loadDetails];
+    // Tapping any video card opens this page and starts playback automatically.
+    if(self.selectedCID.length)[self playTapped];
+}
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGFloat w=self.view.bounds.size.width;
+    CGFloat videoHeight=roundf(w*9.0f/16.0f);
+    self.inlinePlayer.frame=CGRectMake(0,0,w,videoHeight);
+    self.scroll.frame=CGRectMake(0,videoHeight,w,MAX(1,self.view.bounds.size.height-videoHeight));
+    self.scroll.contentSize=CGSizeMake(w,565);
+}
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if(self.presentingFullscreen){
+        [self.inlinePlayer attachPlayerToSurface:YES];
+        self.presentingFullscreen=NO;
+        self.player=nil;
+        if(self.inlinePlayer.player && !self.inlinePlayer.finished && self.inlinePlayer.player.rate==0)
+            [self.inlinePlayer.player play];
+        [self.inlinePlayer tick];
+    }else if(self.wasPlayingBeforeLeave && self.inlinePlayer.player && !self.inlinePlayer.finished){
+        [self.inlinePlayer.player play];
+        self.wasPlayingBeforeLeave=NO;
+    }
+}
+- (void)viewWillDisappear:(BOOL)animated {
+    if(!self.presentingFullscreen){
+        self.requestSerial++;
+        self.wasPlayingBeforeLeave=[self.inlinePlayer playing];
+        [self saveActivePosition];
+        [self.inlinePlayer.player pause];
+    }
+    [super viewWillDisappear:animated];
+}
+- (void)dealloc {
+    [self.inlinePlayer stop];
+}
+- (void)saveActivePosition {
+    if(!self.activeCID.length || !self.inlinePlayer.player)return;
+    NSTimeInterval t=CMTimeGetSeconds(self.inlinePlayer.player.currentTime);
+    NSTimeInterval d=[self.inlinePlayer duration];
+    if(!isfinite(t)||t<1)return;
+    NSString *key=[NSString stringWithFormat:@"%@:%@",BLString(self.video[@"bvid"]),self.activeCID];
+    NSMutableDictionary *values=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"bl_playback_positions"] mutableCopy]?:[NSMutableDictionary dictionary];
+    if(self.inlinePlayer.finished || (d>0 && t>d-8))[values removeObjectForKey:key];
+    else values[key]=@(t);
+    [[NSUserDefaults standardUserDefaults] setObject:values forKey:@"bl_playback_positions"];
+}
+- (void)showFullscreen {
+    if(!self.inlinePlayer.player)return;
+    self.player=[[BLPlayerController alloc] initWithExistingPlayer:self.inlinePlayer.player];
+    self.player.videoTitle=BLString(self.video[@"title"]);
+    self.player.videoKey=[NSString stringWithFormat:@"%@:%@",BLString(self.video[@"bvid"]),self.activeCID?:@""];
+    self.player.qualityLabel=self.quality==16?@"360P":(self.quality==32?@"480P":@"720P");
+    self.player.speed=self.inlinePlayer.speed;
+    self.presentingFullscreen=YES;
+    [self.inlinePlayer attachPlayerToSurface:NO];
+    [self presentViewController:self.player animated:YES completion:nil];
 }
 - (void)render {
     NSString *bvid=self.video[@"bvid"]?:@"";
