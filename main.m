@@ -451,7 +451,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 @property(nonatomic,assign) float preferredRate;
 @property(nonatomic,assign) NSTimeInterval resumeAt;
 @property(nonatomic,strong) NSTimer *saveTimer;
-@property(nonatomic,strong) id timeObserver;
+@property(nonatomic,strong) NSTimer *uiTimer;
 @end
 
 @implementation BLPlayerController
@@ -601,11 +601,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     [self.playerItem addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionInitial|NSKeyValueObservingOptionNew context:BLPlayerItemStatusContext];
     self.observingStatus=YES;
 
-    __weak BLPlayerController *weakSelf=self;
-    self.timeObserver=[self.player addPeriodicTimeObserverForInterval:CMTimeMake(1,2) queue:dispatch_get_main_queue() usingBlock:^(CMTime time){
-        [weakSelf updateTimeline];
-        [weakSelf updatePlaybackUI];
-    }];
+    self.uiTimer=[NSTimer scheduledTimerWithTimeInterval:.5 target:self selector:@selector(playerTick) userInfo:nil repeats:YES];
     self.saveTimer=[NSTimer scheduledTimerWithTimeInterval:8 target:self selector:@selector(savePosition) userInfo:nil repeats:YES];
     [self setNeedsStatusBarAppearanceUpdate];
 }
@@ -703,6 +699,10 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     NSInteger hours=whole/3600,minutes=(whole%3600)/60,secs=whole%60;
     return hours>0?[NSString stringWithFormat:@"%ld:%02ld:%02ld",(long)hours,(long)minutes,(long)secs]:
         [NSString stringWithFormat:@"%02ld:%02ld",(long)minutes,(long)secs];
+}
+- (void)playerTick {
+    [self updateTimeline];
+    [self updatePlaybackUI];
 }
 - (void)updateTimeline {
     if(!self.playerItem)return;
@@ -840,7 +840,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 }
 - (void)dealloc {
     [self.saveTimer invalidate];
-    if(self.timeObserver && self.player)[self.player removeTimeObserver:self.timeObserver];
+    [self.uiTimer invalidate];
     if(self.observingStatus && self.playerItem)
         [self.playerItem removeObserver:self forKeyPath:@"status" context:BLPlayerItemStatusContext];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
