@@ -40,7 +40,7 @@ jobs:
           cp scripts/postinst /tmp/bililite-repack/DEBIAN/postinst
           chmod 755 /tmp/bililite-repack/DEBIAN/postinst
           dpkg-deb --root-owner-group -Zgzip -z6 --build /tmp/bililite-repack "$DEB"
-          test "$(dpkg-deb -f "$DEB" Version)" = "0.8.0"
+          test "$(dpkg-deb -f "$DEB" Version)" = "0.8.1"
           test "$(dpkg-deb -f "$DEB" Architecture)" = "iphoneos-arm"
           ar t "$DEB" | grep -Fx "data.tar.gz"
           ar t "$DEB" | grep -Fx "control.tar.gz"
@@ -77,19 +77,19 @@ jobs:
           assert p["CFBundleExecutable"] == "BiliLite"
           assert p["MinimumOSVersion"] == "8.0"
           assert p["UIDeviceFamily"] == [1]
-          assert p["CFBundleShortVersionString"] == "0.8.0"
+          assert p["CFBundleShortVersionString"] == "0.8.1"
           print("App plist verified")
           PYTEST
           cp -a "$APP" /tmp/bililite-ipa/Payload/BiliLite.app
-          (cd /tmp/bililite-ipa && zip -qr -X "$GITHUB_WORKSPACE/packages/BiliLite-iOS8-v0.8.0.ipa" Payload)
+          (cd /tmp/bililite-ipa && zip -qr -X "$GITHUB_WORKSPACE/packages/BiliLite-iOS8-v0.8.1.ipa" Payload)
           (cd /tmp/bililite-install/Applications && zip -qr -X "$GITHUB_WORKSPACE/packages/BiliLite-iFile-manual.app.zip" BiliLite.app)
-          unzip -t packages/BiliLite-iOS8-v0.8.0.ipa | tail -1
+          unzip -t packages/BiliLite-iOS8-v0.8.1.ipa | tail -1
           echo "Verified gzip deb with safe post-install icon cache refresh"
           sha256sum packages/*.deb packages/*.ipa
       - name: Upload verified packages
         uses: actions/upload-artifact@v4
         with:
-          name: BiliLite-iOS8-v0.8.0-DEB-IPA
+          name: BiliLite-iOS8-v0.8.1-DEB-IPA
           path: |
             packages/*.deb
             packages/*.ipa
