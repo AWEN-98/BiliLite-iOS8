@@ -2249,6 +2249,10 @@ static UIImage *BLLineIcon(NSInteger type, UIColor *color) {
     [self showBottomNav:YES];
     if(button.tag==2){[self openSearch];return;}
     self.mode=button.tag;self.page=1;self.items=@[];self.loading=NO;
+    CGFloat w=self.view.bounds.size.width;
+    UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,26)];
+    header.backgroundColor=BLBg();self.feedNotice.frame=CGRectMake(12,2,w-24,22);
+    [header addSubview:self.feedNotice];self.tableView.tableHeaderView=header;
     self.requestToken++;[self.tableView reloadData];[self updateFeedChrome];[self refreshBottomTabs];
     [self.search resignFirstResponder];
     if(self.mode>=3)[self loadLocal];else [self fetch];
