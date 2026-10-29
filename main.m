@@ -449,6 +449,9 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 @property(nonatomic,assign) BOOL controlsVisible;
 @property(nonatomic,assign) BOOL holdingSpeed;
 @property(nonatomic,assign) BOOL wasPlaying;
+@property(nonatomic,strong) UILabel *gestureHint;
+@property(nonatomic,assign) CGFloat gestureStart;
+@property(nonatomic,assign) BOOL brightnessGesture;
 @end
 
 @implementation BLPlayerController
@@ -496,13 +499,24 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
         hold.cancelsTouchesInView=NO;
         [self.surface addGestureRecognizer:hold];
     }
+    UIPanGestureRecognizer *adjust=[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(adjustPlayback:)];
+    adjust.maximumNumberOfTouches=1;
+    [self.surface addGestureRecognizer:adjust];
+    self.gestureHint=[[UILabel alloc] initWithFrame:CGRectMake(0,0,116,28)];
+    self.gestureHint.textAlignment=NSTextAlignmentCenter;
+    self.gestureHint.textColor=[UIColor whiteColor];
+    self.gestureHint.font=[UIFont boldSystemFontOfSize:12];
+    self.gestureHint.backgroundColor=[UIColor colorWithWhite:0 alpha:.42];
+    self.gestureHint.layer.cornerRadius=9;self.gestureHint.clipsToBounds=YES;
+    self.gestureHint.alpha=0;
+    [self.view addSubview:self.gestureHint];
     self.topControls=[[UIView alloc] initWithFrame:CGRectZero];
     self.topControls.backgroundColor=[UIColor colorWithWhite:0 alpha:.60];
     [self.view addSubview:self.topControls];
     self.dismissButton=[self actionButton:@"‹ 返回" selector:@selector(closePlayer)];
     [self.topControls addSubview:self.dismissButton];
     self.titleText=[[UILabel alloc] initWithFrame:CGRectZero];
-    self.titleText.text=self.liveStream?@"● 正在直播":(self.videoTitle.length?self.videoTitle:@"视频播放");
+    self.titleText.text=self.liveStream?@"正在直播":(self.videoTitle.length?self.videoTitle:@"视频播放");
     self.titleText.textColor=[UIColor whiteColor];
     self.titleText.font=[UIFont boldSystemFontOfSize:13];
     self.titleText.lineBreakMode=NSLineBreakByTruncatingTail;
@@ -566,6 +580,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     self.positionText.frame=CGRectMake(12,31,w-24,20);
     self.playButton.frame=CGRectMake((w-54)/2,(h-54)/2,54,54);
     self.statusText.frame=CGRectMake(MAX(8,(w-260)/2),MAX(49,(h-54)/2+64),MIN(260,w-16),38);
+    self.gestureHint.frame=CGRectMake((w-116)/2,MAX(52,h*.18),116,28);
 }
 - (void)closePlayer {
     [self storePosition];
@@ -649,16 +664,38 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:menu animated:YES completion:nil];
 }
+- (void)hideGestureHint {
+    [UIView animateWithDuration:.15 animations:^{self.gestureHint.alpha=0;}];
+}
+- (void)adjustPlayback:(UIPanGestureRecognizer *)g {
+    CGPoint translation=[g translationInView:self.surface];
+    if(g.state==UIGestureRecognizerStateBegan){
+        CGPoint start=[g locationInView:self.surface];
+        self.brightnessGesture=start.x<self.surface.bounds.size.width*.5;
+        self.gestureStart=self.brightnessGesture?[UIScreen mainScreen].brightness:self.player.volume;
+    }else if(g.state==UIGestureRecognizerStateChanged){
+        if(fabs(translation.y)<8 && fabs(translation.x)>fabs(translation.y))return;
+        CGFloat delta=-translation.y/MAX(self.surface.bounds.size.height*.65,100);
+        CGFloat value=MAX(0,MIN(1,self.gestureStart+delta));
+        if(self.brightnessGesture)[UIScreen mainScreen].brightness=value;
+        else self.player.volume=value;
+        self.gestureHint.text=[NSString stringWithFormat:@"%@  %d%%",self.brightnessGesture?@"亮度":@"音量",(int)round(value*100)];
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hideGestureHint) object:nil];
+        self.gestureHint.alpha=1;
+    }else if(g.state==UIGestureRecognizerStateEnded||g.state==UIGestureRecognizerStateCancelled){
+        [self performSelector:@selector(hideGestureHint) withObject:nil afterDelay:.45];
+    }
+}
 - (void)heldVideo:(UILongPressGestureRecognizer *)g {
     if(self.liveStream)return;
     if(g.state==UIGestureRecognizerStateBegan){
         self.holdingSpeed=YES;self.wasPlaying=[self playing];
         if(self.wasPlaying)self.player.rate=2;
-        self.statusText.text=@"2× 快进";[self revealControls];
+        self.gestureHint.text=@"2×";self.gestureHint.alpha=1;
     }else if(g.state==UIGestureRecognizerStateEnded||g.state==UIGestureRecognizerStateCancelled){
         self.holdingSpeed=NO;
         if(self.wasPlaying)self.player.rate=self.speed;
-        self.statusText.text=@"";
+        [self hideGestureHint];
         [self scheduleHide];
     }
 }
@@ -1012,7 +1049,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 @implementation BLDetailController
 - (instancetype)initWithVideo:(NSDictionary *)video {
     if((self=[super init])){
-        self.video=video?:@{};self.related=@[];self.parts=@[];self.quality=16;
+        self.video=video?:@{};self.related=@[];self.parts=@[];self.quality=64;
         self.selectedCID=BLString(video[@"cid"]);
         self.imageCache=[NSCache new];self.imageCache.countLimit=12;
     }
@@ -1069,7 +1106,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     [self.scroll addSubview:self.descriptionBox];
 
     self.partButton=[self button:@"P1 选集" x:12 y:255 w:143 action:@selector(choosePart)];
-    self.qualityButton=[self button:@"360P 画质" x:165 y:255 w:w-177 action:@selector(chooseQuality)];
+    self.qualityButton=[self button:@"720P 优先" x:165 y:255 w:w-177 action:@selector(chooseQuality)];
 
     UILabel *relatedLabel=[[UILabel alloc] initWithFrame:CGRectMake(13,305,w-26,29)];
     relatedLabel.text=@"相关推荐";relatedLabel.font=[UIFont boldSystemFontOfSize:15];
@@ -1258,8 +1295,9 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
             }
             if([candidate hasPrefix:@"https://"] || [candidate hasPrefix:@"http://"]){stream=candidate;break;}
         }
-        if(!stream.length && allowFallback && quality!=16){
-            [self requestPlayURLForBVID:bvid cid:cid quality:16 allowFallback:NO completion:completion];
+        if(!stream.length && allowFallback && quality>16){
+            NSInteger fallback=quality>32?32:16;
+            [self requestPlayURLForBVID:bvid cid:cid quality:fallback allowFallback:YES completion:completion];
             return;
         }
         completion(stream,json,err);
@@ -1419,9 +1457,11 @@ static NSString *BLHLS(NSDictionary *json){
     self.playButton=[UIButton buttonWithType:UIButtonTypeCustom];
     self.playButton.frame=CGRectMake(12,347,w-24,48);self.playButton.backgroundColor=BLPink();
     self.playButton.layer.cornerRadius=11;
-    [self.playButton setTitle:@"▶ 进入直播 · 全屏观看" forState:UIControlStateNormal];
+    [self.playButton setTitle:@"进入直播 · 全屏观看" forState:UIControlStateNormal];
     [self.playButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.playButton.titleLabel.font=[UIFont boldSystemFontOfSize:16];
+    [self.playButton setImage:BLLineIcon(6,[UIColor whiteColor]) forState:UIControlStateNormal];
+    self.playButton.imageEdgeInsets=UIEdgeInsetsMake(0,-6,0,0);
     [self.playButton addTarget:self action:@selector(playLive) forControlEvents:UIControlEventTouchUpInside];
     [holder addSubview:self.playButton];
     self.qualityButton=[UIButton buttonWithType:UIButtonTypeSystem];
@@ -1444,11 +1484,11 @@ static NSString *BLHLS(NSDictionary *json){
 }
 - (void)render {
     self.heading.text=BLString(self.room[@"title"]).length?self.room[@"title"]:@"直播间";
-    NSString *status=[self.room[@"live_status"] integerValue]==1?@"● 正在直播":@"○ 未开播";
+    NSString *status=[self.room[@"live_status"] integerValue]==1?@"● 正在直播":@"未开播";
     self.info.text=[NSString stringWithFormat:@"%@\n主播：%@  ·  分区：%@\n房间号：%@",
       status,BLString(self.room[@"uname"]),BLString(self.room[@"area"]),BLString(self.room[@"roomid"])];
     BLFetchImage(BLString(self.room[@"cover"]),self.cover,self.imageCache);
-    [self.favoriteButton setTitle:BLContains(@"bl_live_favorites_v1",BLString(self.room[@"roomid"]))?@"★ 已收藏":@"☆ 收藏直播间" forState:UIControlStateNormal];
+    [self.favoriteButton setTitle:BLContains(@"bl_live_favorites_v1",BLString(self.room[@"roomid"]))?@"已收藏":@"收藏直播间" forState:UIControlStateNormal];
 }
 - (void)loadInfo {
     NSString *roomid=BLString(self.room[@"roomid"]);if(!roomid.length)return;
