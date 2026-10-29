@@ -1642,6 +1642,254 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
     });
 }
 
+
+@interface BLLiveWatchController : UIViewController
+@property(nonatomic,strong) NSDictionary *room;
+@property(nonatomic,strong) AVPlayer *player;
+@property(nonatomic,strong) BLPlayerSurface *surface;
+@property(nonatomic,strong) UILabel *statusLabel;
+@property(nonatomic,strong) UILabel *roomTitle;
+@property(nonatomic,strong) UILabel *roomMeta;
+@property(nonatomic,strong) UIButton *playButton;
+@property(nonatomic,strong) UIButton *fullscreenButton;
+@property(nonatomic,strong) UIButton *favoriteButton;
+@property(nonatomic,strong) UIButton *qualityButton;
+@property(nonatomic,strong) NSTimer *tickTimer;
+@property(nonatomic,strong) BLPlayerController *fullscreenPlayer;
+@property(nonatomic,assign) BOOL hasStarted;
+@property(nonatomic,assign) BOOL pausedByUser;
+@property(nonatomic,assign) BOOL presentingFullscreen;
+@property(nonatomic,assign) BOOL qualityAuto;
+@property(nonatomic,assign) NSInteger quality;
+@property(nonatomic,assign) NSUInteger sourceSerial;
+@property(nonatomic,assign) NSTimeInterval lastRecovery;
+@end
+@implementation BLLiveWatchController
+- (instancetype)initWithRoom:(NSDictionary *)room stream:(NSString *)stream quality:(NSInteger)quality {
+    if((self=[super init])){
+        self.room=room?:@{};
+        self.quality=quality;
+        self.qualityAuto=YES;
+        self.player=[AVPlayer playerWithPlayerItem:[AVPlayerItem playerItemWithURL:[NSURL URLWithString:stream]]];
+    }
+    return self;
+}
+- (UIButton *)lineButton:(NSInteger)icon action:(SEL)action {
+    UIButton *b=[UIButton buttonWithType:UIButtonTypeCustom];
+    [b setImage:BLLineIcon(icon,[UIColor whiteColor]) forState:UIControlStateNormal];
+    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return b;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title=@"直播";
+    self.edgesForExtendedLayout=UIRectEdgeNone;
+    self.view.backgroundColor=BLBg();
+    self.surface=[[BLPlayerSurface alloc] initWithFrame:CGRectZero];
+    self.surface.backgroundColor=[UIColor blackColor];
+    ((AVPlayerLayer *)self.surface.layer).videoGravity=AVLayerVideoGravityResizeAspect;
+    ((AVPlayerLayer *)self.surface.layer).player=self.player;
+    [self.view addSubview:self.surface];
+    UIView *bar=[[UIView alloc] initWithFrame:CGRectZero];
+    bar.tag=102;
+    bar.backgroundColor=[UIColor colorWithWhite:0 alpha:.46];
+    [self.view addSubview:bar];
+    self.playButton=[self lineButton:7 action:@selector(togglePlaying)];
+    [bar addSubview:self.playButton];
+    UILabel *liveText=[[UILabel alloc] initWithFrame:CGRectZero];
+    liveText.tag=103;liveText.text=@"正在直播";
+    liveText.textColor=[UIColor whiteColor];liveText.font=[UIFont systemFontOfSize:12];
+    [bar addSubview:liveText];
+    self.fullscreenButton=[self lineButton:12 action:@selector(openFullscreen)];
+    self.fullscreenButton.accessibilityLabel=@"全屏";
+    [bar addSubview:self.fullscreenButton];
+    self.statusLabel=[[UILabel alloc] initWithFrame:CGRectZero];
+    self.statusLabel.text=@"正在连接直播…";
+    self.statusLabel.textColor=[UIColor whiteColor];
+    self.statusLabel.backgroundColor=[UIColor colorWithWhite:0 alpha:.34];
+    self.statusLabel.font=[UIFont systemFontOfSize:12];
+    self.statusLabel.textAlignment=NSTextAlignmentCenter;
+    self.statusLabel.numberOfLines=2;
+    [self.view addSubview:self.statusLabel];
+    self.roomTitle=[[UILabel alloc] initWithFrame:CGRectZero];
+    self.roomTitle.numberOfLines=2;self.roomTitle.font=[UIFont boldSystemFontOfSize:16];
+    self.roomTitle.textColor=BLInk();
+    self.roomTitle.text=BLString(self.room[@"title"]).length?self.room[@"title"]:@"直播间";
+    [self.view addSubview:self.roomTitle];
+    self.roomMeta=[[UILabel alloc] initWithFrame:CGRectZero];
+    self.roomMeta.numberOfLines=2;self.roomMeta.font=[UIFont systemFontOfSize:12];
+    self.roomMeta.textColor=[UIColor grayColor];
+    self.roomMeta.text=[NSString stringWithFormat:@"主播：%@   分区：%@\n房间号：%@",
+        BLString(self.room[@"uname"]),BLString(self.room[@"area"]),BLString(self.room[@"roomid"])];
+    [self.view addSubview:self.roomMeta];
+    self.qualityButton=[UIButton buttonWithType:UIButtonTypeSystem];
+    self.favoriteButton=[UIButton buttonWithType:UIButtonTypeSystem];
+    for(UIButton *button in @[self.qualityButton,self.favoriteButton]){
+        button.backgroundColor=[UIColor whiteColor];
+        button.layer.cornerRadius=8;
+        button.titleLabel.font=[UIFont systemFontOfSize:12];
+        [self.view addSubview:button];
+    }
+    [self.qualityButton addTarget:self action:@selector(chooseQuality) forControlEvents:UIControlEventTouchUpInside];
+    [self.favoriteButton addTarget:self action:@selector(toggleFavorite) forControlEvents:UIControlEventTouchUpInside];
+    [self updateButtons];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(streamStalled:)
+        name:AVPlayerItemPlaybackStalledNotification object:nil];
+    self.tickTimer=[NSTimer scheduledTimerWithTimeInterval:.5 target:self selector:@selector(refreshPlayback)
+        userInfo:nil repeats:YES];
+    [self refreshPlayback];
+}
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGFloat w=self.view.bounds.size.width;
+    CGFloat playerHeight=roundf(w*9.0f/16.0f);
+    self.surface.frame=CGRectMake(0,0,w,playerHeight);
+    UIView *bar=[self.view viewWithTag:102];
+    bar.frame=CGRectMake(0,playerHeight-38,w,38);
+    self.playButton.frame=CGRectMake(5,0,44,38);
+    [bar viewWithTag:103].frame=CGRectMake(55,0,MAX(70,w-125),38);
+    self.fullscreenButton.frame=CGRectMake(w-49,0,44,38);
+    self.statusLabel.frame=CGRectMake(25,MAX(10,(playerHeight-40)/2),w-50,40);
+    self.roomTitle.frame=CGRectMake(12,playerHeight+14,w-24,55);
+    self.roomMeta.frame=CGRectMake(12,playerHeight+75,w-24,49);
+    CGFloat buttonY=playerHeight+135;
+    self.qualityButton.frame=CGRectMake(12,buttonY,(w-36)/2,40);
+    self.favoriteButton.frame=CGRectMake(24+(w-36)/2,buttonY,(w-36)/2,40);
+}
+- (void)updateButtons {
+    [self.qualityButton setTitle:[NSString stringWithFormat:@"%@ %@",self.qualityAuto?@"自动":@"固定",self.quality>80?@"高清":@"流畅"] forState:UIControlStateNormal];
+    BOOL saved=BLContains(@"bl_live_favorites_v1",BLString(self.room[@"roomid"]));
+    [self.favoriteButton setTitle:saved?@"已收藏":@"收藏直播间" forState:UIControlStateNormal];
+    [self.favoriteButton setImage:BLLineIcon(3,BLPink()) forState:UIControlStateNormal];
+}
+- (void)refreshPlayback {
+    if(self.presentingFullscreen)return;
+    AVPlayerItem *item=self.player.currentItem;
+    if(!item)return;
+    if(item.status==AVPlayerItemStatusFailed){
+        self.statusLabel.text=item.error.localizedDescription?:@"直播源暂时无法播放";
+        self.statusLabel.hidden=NO;
+        [self.playButton setImage:BLLineIcon(7,[UIColor whiteColor]) forState:UIControlStateNormal];
+        return;
+    }
+    if(item.status==AVPlayerItemStatusReadyToPlay){
+        if(!self.hasStarted && !self.pausedByUser){
+            self.hasStarted=YES;
+            [self.player play];
+        }
+        BOOL playing=self.player.rate>0.01f;
+        [self.playButton setImage:BLLineIcon(playing?8:7,[UIColor whiteColor]) forState:UIControlStateNormal];
+        self.statusLabel.hidden=playing || self.pausedByUser;
+        if(!playing && !self.pausedByUser)self.statusLabel.text=@"直播缓冲中…";
+        if(playing && self.qualityAuto){
+            double rate=BLObservedBitrate(item);
+            if(rate>250000){
+                double prior=[[NSUserDefaults standardUserDefaults] doubleForKey:@"bl_auto_bandwidth_bps_v1"];
+                [[NSUserDefaults standardUserDefaults] setDouble:prior>0?prior*.9+MIN(rate,12000000)*.1:rate forKey:@"bl_auto_bandwidth_bps_v1"];
+            }
+        }
+    }else{
+        self.statusLabel.text=@"正在连接直播…";
+        self.statusLabel.hidden=NO;
+    }
+}
+- (void)togglePlaying {
+    self.pausedByUser=self.player.rate>0.01f;
+    if(self.pausedByUser)[self.player pause];
+    else{
+        if(self.player.currentItem.status==AVPlayerItemStatusFailed){
+            [self chooseStreamQuality:self.quality automatic:self.qualityAuto];
+            return;
+        }
+        self.hasStarted=YES;
+        [self.player play];
+    }
+    [self refreshPlayback];
+}
+- (void)openFullscreen {
+    if(!self.player.currentItem)return;
+    self.presentingFullscreen=YES;
+    ((AVPlayerLayer *)self.surface.layer).player=nil;
+    self.fullscreenPlayer=[[BLPlayerController alloc] initWithExistingPlayer:self.player];
+    self.fullscreenPlayer.liveStream=YES;
+    self.fullscreenPlayer.videoTitle=BLString(self.room[@"title"]);
+    self.fullscreenPlayer.liveRoomID=BLString(self.room[@"roomid"]);
+    self.fullscreenPlayer.liveQuality=self.quality;
+    [self presentViewController:self.fullscreenPlayer animated:YES completion:nil];
+}
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if(self.presentingFullscreen){
+        self.presentingFullscreen=NO;
+        ((AVPlayerLayer *)self.surface.layer).player=self.player;
+        self.fullscreenPlayer=nil;
+        [self refreshPlayback];
+    }
+}
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    if(!self.presentingFullscreen){
+        self.sourceSerial++;
+        [self.player pause];
+    }
+}
+- (void)streamStalled:(NSNotification *)note {
+    if(note.object!=self.player.currentItem || self.presentingFullscreen || !self.qualityAuto || self.quality<=80)return;
+    if(BLNow()-self.lastRecovery<12)return;
+    self.lastRecovery=BLNow();
+    [self chooseStreamQuality:80 automatic:YES];
+}
+- (void)chooseStreamQuality:(NSInteger)quality automatic:(BOOL)automatic {
+    if(!BLString(self.room[@"roomid"]).length)return;
+    self.quality=quality;self.qualityAuto=automatic;
+    [self updateButtons];
+    self.statusLabel.hidden=NO;
+    self.statusLabel.text=@"正在切换直播线路…";
+    self.hasStarted=NO;
+    NSUInteger token=++self.sourceSerial;
+    BLResolveLiveURL(BLString(self.room[@"roomid"]),quality,automatic,^(NSString *stream,NSString *failure){
+        if(token!=self.sourceSerial || !self.view.window)return;
+        if(!stream.length){
+            self.statusLabel.text=failure.length?failure:@"没有可用的直播源";
+            return;
+        }
+        [self.player replaceCurrentItemWithPlayerItem:[AVPlayerItem playerItemWithURL:[NSURL URLWithString:stream]]];
+        self.pausedByUser=NO;
+        [self refreshPlayback];
+    });
+}
+- (void)chooseQuality {
+    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"直播清晰度"
+        message:@"自动模式优先结合网络状况播放，发生卡顿时可切到流畅。" preferredStyle:UIAlertControllerStyleActionSheet];
+    [menu addAction:[UIAlertAction actionWithTitle:self.qualityAuto?@"自动（当前）":@"自动"
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            NSInteger q=BLLiveSuggestedQuality();
+            if(!self.qualityAuto || q!=self.quality)[self chooseStreamQuality:q automatic:YES];
+        }]];
+    for(NSNumber *value in @[@80,@150]){
+        NSInteger q=[value integerValue];
+        NSString *name=q==80?@"流畅":@"高清";
+        [menu addAction:[UIAlertAction actionWithTitle:(!self.qualityAuto && self.quality==q)?[name stringByAppendingString:@"（当前）"]:name
+            style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+                if(self.qualityAuto || self.quality!=q)[self chooseStreamQuality:q automatic:NO];
+            }]];
+    }
+    [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:menu animated:YES completion:nil];
+}
+- (void)toggleFavorite {
+    NSString *rid=BLString(self.room[@"roomid"]);
+    if(!rid.length)return;
+    BLStore(@"bl_live_favorites_v1",self.room,BLContains(@"bl_live_favorites_v1",rid));
+    [self updateButtons];
+}
+- (void)dealloc {
+    [self.tickTimer invalidate];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [self.player pause];
+}
+@end
+
 @interface BLRoomDetailController : UIViewController
 @property(nonatomic,strong) NSDictionary *room;
 @property(nonatomic,strong) UIImageView *cover;
@@ -1762,12 +2010,8 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
 - (void)playLiveURL:(NSString *)url {
     if(![url hasPrefix:@"https://"] && ![url hasPrefix:@"http://"]){[self liveError:@"未获取到有效播放地址"];return;}
     [self.playButton setTitle:@"进入直播 · 全屏观看" forState:UIControlStateNormal];self.playButton.enabled=YES;
-    self.player=[[BLPlayerController alloc] initWithContentURL:[NSURL URLWithString:url]];
-    self.player.liveStream=YES;
-    self.player.videoTitle=BLString(self.room[@"title"]);
-    self.player.liveRoomID=BLString(self.room[@"roomid"]);
-    self.player.liveQuality=self.quality;
-    [self presentViewController:self.player animated:YES completion:nil];
+    BLLiveWatchController *watch=[[BLLiveWatchController alloc] initWithRoom:self.room stream:url quality:self.quality];
+    [self.navigationController pushViewController:watch animated:YES];
 }
 - (void)liveError:(NSString *)message {
     self.playButton.enabled=YES;[self.playButton setTitle:@"重试直播" forState:UIControlStateNormal];
@@ -1959,13 +2203,8 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
         if(token!=self.liveRequestToken)return;
         [self hideLiveLoading];
         if(stream.length){
-            BLPlayerController *player=[[BLPlayerController alloc] initWithContentURL:[NSURL URLWithString:stream]];
-            player.liveStream=YES;
-            player.videoTitle=BLString(room[@"title"]);
-            player.liveRoomID=roomID;
-            player.liveQuality=suggested;
-            self.livePlayer=player;
-            [self presentViewController:player animated:YES completion:nil];
+            BLLiveWatchController *watch=[[BLLiveWatchController alloc] initWithRoom:room stream:stream quality:suggested];
+            [self.navigationController pushViewController:watch animated:YES];
             return;
         }
         UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"直播暂时无法播放"
