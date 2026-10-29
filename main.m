@@ -7,6 +7,7 @@
 #import <Security/Security.h>
 #import <CoreImage/CoreImage.h>
 
+static UIImage *BLLineIcon(NSInteger type, UIColor *color);
 static UIColor *BLPink(void){return [UIColor colorWithRed:.93 green:.27 blue:.47 alpha:1];}
 static UIColor *BLBg(void){return [UIColor colorWithRed:.965 green:.972 blue:.985 alpha:1];}
 static UIColor *BLInk(void){return [UIColor colorWithRed:.15 green:.19 blue:.28 alpha:1];}
@@ -513,7 +514,9 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     self.topControls=[[UIView alloc] initWithFrame:CGRectZero];
     self.topControls.backgroundColor=[UIColor colorWithWhite:0 alpha:.60];
     [self.view addSubview:self.topControls];
-    self.dismissButton=[self actionButton:@"‹ 返回" selector:@selector(closePlayer)];
+    self.dismissButton=[self actionButton:@"返回" selector:@selector(closePlayer)];
+    [self.dismissButton setImage:BLLineIcon(10,[UIColor whiteColor]) forState:UIControlStateNormal];
+    self.dismissButton.imageEdgeInsets=UIEdgeInsetsMake(0,-3,0,0);
     [self.topControls addSubview:self.dismissButton];
     self.titleText=[[UILabel alloc] initWithFrame:CGRectZero];
     self.titleText.text=self.liveStream?@"正在直播":(self.videoTitle.length?self.videoTitle:@"视频播放");
@@ -521,7 +524,8 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     self.titleText.font=[UIFont boldSystemFontOfSize:13];
     self.titleText.lineBreakMode=NSLineBreakByTruncatingTail;
     [self.topControls addSubview:self.titleText];
-    self.settingsButton=[self actionButton:@"•••" selector:@selector(openSettings)];
+    self.settingsButton=[self actionButton:@"" selector:@selector(openSettings)];
+    [self.settingsButton setImage:BLLineIcon(11,[UIColor whiteColor]) forState:UIControlStateNormal];
     [self.topControls addSubview:self.settingsButton];
 
     self.bottomControls=[[UIView alloc] initWithFrame:CGRectZero];
@@ -542,7 +546,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     self.positionText.text=self.liveStream?@"直播中":@"00:00 / 00:00";
     [self.bottomControls addSubview:self.positionText];
     if(self.liveStream){self.slider.hidden=YES;self.settingsButton.hidden=YES;}
-    self.playButton=[self actionButton:@"Ⅱ" selector:@selector(togglePlaying)];
+    self.playButton=[self actionButton:@"" selector:@selector(togglePlaying)];
     self.playButton.titleLabel.font=[UIFont systemFontOfSize:27];
     self.playButton.backgroundColor=[UIColor colorWithWhite:0 alpha:.52];
     self.playButton.layer.cornerRadius=27;
@@ -635,7 +639,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 - (void)tick {
     BOOL playing=[self playing];
     self.statusText.hidden=self.statusText.text.length==0;
-    [self.playButton setTitle:playing?@"Ⅱ":@"▶" forState:UIControlStateNormal];
+    [self.playButton setImage:BLLineIcon(playing?8:7,[UIColor whiteColor]) forState:UIControlStateNormal];
     if(!playing){self.playButton.alpha=1;self.playButton.userInteractionEnabled=YES;}
     else {self.playButton.alpha=self.controlsVisible?1:0;self.playButton.userInteractionEnabled=self.controlsVisible;}
     if(self.liveStream)return;
@@ -655,7 +659,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"播放设置" message:self.qualityLabel.length?[NSString stringWithFormat:@"清晰度：%@（详情页可切换）",self.qualityLabel]:nil preferredStyle:UIAlertControllerStyleActionSheet];
     for(NSNumber *v in @[@0.75,@1.0,@1.25,@1.5,@2.0]){
         float rate=[v floatValue];
-        NSString *title=[NSString stringWithFormat:@"%.2g×%@",rate,fabsf(rate-self.speed)<.01?@"  ✓":@""];
+        NSString *title=[NSString stringWithFormat:@"%.2g×%@",rate,fabsf(rate-self.speed)<.01?@"（当前）":@""];
         [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
             self.speed=rate;if([self playing])self.player.rate=rate;
             [self revealControls];
@@ -798,7 +802,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
         self.toggleButton.backgroundColor=[UIColor colorWithWhite:0 alpha:.57];
         self.toggleButton.layer.cornerRadius=23;
         self.toggleButton.titleLabel.font=[UIFont systemFontOfSize:23];
-        [self.toggleButton setTitle:@"▶" forState:UIControlStateNormal];
+        [self.toggleButton setImage:BLLineIcon(7,[UIColor whiteColor]) forState:UIControlStateNormal];
         [self.toggleButton addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:self.toggleButton];
         self.bottom=[[UIView alloc] initWithFrame:CGRectZero];
@@ -814,7 +818,8 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
         [self.slider addTarget:self action:@selector(seekUp) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchCancel];
         [self.bottom addSubview:self.slider];
         self.fullscreenButton=[UIButton buttonWithType:UIButtonTypeCustom];
-        [self.fullscreenButton setTitle:@"全屏" forState:UIControlStateNormal];
+        [self.fullscreenButton setImage:BLLineIcon(12,[UIColor whiteColor]) forState:UIControlStateNormal];
+        self.fullscreenButton.accessibilityLabel=@"全屏";
         self.fullscreenButton.titleLabel.font=[UIFont boldSystemFontOfSize:12];
         [self.fullscreenButton addTarget:self action:@selector(fullscreen) forControlEvents:UIControlEventTouchUpInside];
         [self.bottom addSubview:self.fullscreenButton];
@@ -892,7 +897,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     self.finished=YES;
     [self.player pause];
     self.statusLabel.text=@"播放结束";
-    self.toggleButton.hidden=NO;[self.toggleButton setTitle:@"↻" forState:UIControlStateNormal];
+    self.toggleButton.hidden=NO;[self.toggleButton setImage:BLLineIcon(9,[UIColor whiteColor]) forState:UIControlStateNormal];
     [self tick];
 }
 - (void)itemFailed:(NSNotification *)note {
@@ -941,7 +946,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 - (void)tick {
     BOOL play=[self playing];
     self.statusLabel.hidden=self.statusLabel.text.length==0;
-    [self.toggleButton setTitle:play?@"Ⅱ":@"▶" forState:UIControlStateNormal];
+    [self.toggleButton setImage:BLLineIcon(play?8:7,[UIColor whiteColor]) forState:UIControlStateNormal];
     self.toggleButton.alpha=(play && !self.expanded)?0:1;
     self.toggleButton.userInteractionEnabled=!play||self.expanded;
     self.bottom.alpha=(play && !self.expanded)?0:1;
@@ -949,7 +954,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     NSTimeInterval t=CMTimeGetSeconds(self.player.currentTime),d=[self duration];
     if(!isfinite(t)||t<0)t=0;
     if(!self.dragging){self.slider.value=d>0?(float)MIN(1,t/d):0;self.timeLabel.text=[self clock:t];}
-    if(self.finished)[self.toggleButton setTitle:@"↻" forState:UIControlStateNormal];
+    if(self.finished)[self.toggleButton setImage:BLLineIcon(9,[UIColor whiteColor]) forState:UIControlStateNormal];
 }
 - (void)seekDown {self.dragging=YES;}
 - (void)seekMove {self.timeLabel.text=[self clock:[self duration]*self.slider.value];}
@@ -1094,7 +1099,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     self.meta.font=[UIFont systemFontOfSize:11];self.meta.numberOfLines=2;
     self.meta.textColor=[UIColor grayColor];[self.scroll addSubview:self.meta];
 
-    self.favoriteButton=[self button:@"☆ 收藏" x:12 y:114 w:89 action:@selector(toggleFavorite)];
+    self.favoriteButton=[self button:@"收藏" x:12 y:114 w:89 action:@selector(toggleFavorite)];
     [self button:@"复制链接" x:107 y:114 w:93 action:@selector(copyLink)];
     [self button:@"评论" x:206 y:114 w:w-218 action:@selector(openComments)];
     self.descriptionBox=[[UITextView alloc] initWithFrame:CGRectMake(12,159,w-24,85)];
@@ -1182,7 +1187,10 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     self.titleLabel.text=self.video[@"title"]?:bvid;
     self.meta.text=[NSString stringWithFormat:@"UP：%@   播放：%@\nBV：%@",self.video[@"author"]?:@"",self.video[@"view"]?:@"",bvid];
     self.descriptionBox.text=BLString(self.video[@"desc"]).length?self.video[@"desc"]:@"视频简介正在加载…";
-    [self.favoriteButton setTitle:BLContains(@"bl_favorites_v1",bvid)?@"★ 已收藏":@"☆ 收藏" forState:UIControlStateNormal];
+    BOOL saved=BLContains(@"bl_favorites_v1",bvid);
+    [self.favoriteButton setTitle:saved?@"已收藏":@"收藏" forState:UIControlStateNormal];
+    [self.favoriteButton setImage:BLLineIcon(3,saved?[UIColor whiteColor]:[UIColor whiteColor]) forState:UIControlStateNormal];
+    self.favoriteButton.imageEdgeInsets=UIEdgeInsetsMake(0,-3,0,0);
     if(self.partButton){
         NSUInteger index=0;
         for(NSUInteger i=0;i<self.parts.count;i++)if([BLString(self.parts[i][@"cid"]) isEqualToString:self.selectedCID]){index=i;break;}
@@ -1410,8 +1418,6 @@ static NSString *BLHLS(NSDictionary *json){
     return nil;
 }
 
-static UIImage *BLLineIcon(NSInteger type, UIColor *color);
-
 @interface BLRoomDetailController : UIViewController
 @property(nonatomic,strong) NSDictionary *room;
 @property(nonatomic,strong) UIImageView *cover;
@@ -1486,11 +1492,14 @@ static UIImage *BLLineIcon(NSInteger type, UIColor *color);
 }
 - (void)render {
     self.heading.text=BLString(self.room[@"title"]).length?self.room[@"title"]:@"直播间";
-    NSString *status=[self.room[@"live_status"] integerValue]==1?@"● 正在直播":@"未开播";
+    NSString *status=[self.room[@"live_status"] integerValue]==1?@"正在直播":@"未开播";
     self.info.text=[NSString stringWithFormat:@"%@\n主播：%@  ·  分区：%@\n房间号：%@",
       status,BLString(self.room[@"uname"]),BLString(self.room[@"area"]),BLString(self.room[@"roomid"])];
     BLFetchImage(BLString(self.room[@"cover"]),self.cover,self.imageCache);
-    [self.favoriteButton setTitle:BLContains(@"bl_live_favorites_v1",BLString(self.room[@"roomid"]))?@"已收藏":@"收藏直播间" forState:UIControlStateNormal];
+    BOOL saved=BLContains(@"bl_live_favorites_v1",BLString(self.room[@"roomid"]));
+    [self.favoriteButton setTitle:saved?@"已收藏":@"收藏直播间" forState:UIControlStateNormal];
+    [self.favoriteButton setImage:BLLineIcon(3,BLPink()) forState:UIControlStateNormal];
+    self.favoriteButton.imageEdgeInsets=UIEdgeInsetsMake(0,-5,0,0);
 }
 - (void)loadInfo {
     NSString *roomid=BLString(self.room[@"roomid"]);if(!roomid.length)return;
@@ -1528,7 +1537,7 @@ static UIImage *BLLineIcon(NSInteger type, UIColor *color);
 }
 - (void)playLiveURL:(NSString *)url {
     if(![url hasPrefix:@"https://"] && ![url hasPrefix:@"http://"]){[self liveError:@"未获取到有效播放地址"];return;}
-    [self.playButton setTitle:@"▶ 进入直播 · 全屏观看" forState:UIControlStateNormal];self.playButton.enabled=YES;
+    [self.playButton setTitle:@"进入直播 · 全屏观看" forState:UIControlStateNormal];self.playButton.enabled=YES;
     self.player=[[BLPlayerController alloc] initWithContentURL:[NSURL URLWithString:url]];
     self.player.liveStream=YES;
     self.player.videoTitle=BLString(self.room[@"title"]);
@@ -1658,7 +1667,7 @@ static UIImage *BLLineIcon(NSInteger type, UIColor *color);
     }
     NSDictionary *room=self.rooms[index.row];
     ((UILabel *)[cell.contentView viewWithTag:932]).text=room[@"title"];
-    ((UILabel *)[cell.contentView viewWithTag:933]).text=[NSString stringWithFormat:@"● %@ · %@",room[@"uname"]?:@"",room[@"area"]?:@""];
+    ((UILabel *)[cell.contentView viewWithTag:933]).text=[NSString stringWithFormat:@"%@ · %@",room[@"uname"]?:@"",room[@"area"]?:@""];
     BLFetchImage(BLString(room[@"cover"]),(UIImageView *)[cell.contentView viewWithTag:931],self.imageCache);
     return cell;
 }
@@ -2146,6 +2155,27 @@ static UIImage *BLLineIcon(NSInteger type, UIColor *color) {
         CGContextStrokeRect(c,CGRectMake(3,7,18,13));
         CGContextMoveToPoint(c,9,3);CGContextAddLineToPoint(c,12,6);CGContextAddLineToPoint(c,15,3);
         CGContextMoveToPoint(c,10,11);CGContextAddLineToPoint(c,15,13.5);CGContextAddLineToPoint(c,10,16);CGContextClosePath(c);
+    }else if(type==7){ // play
+        CGContextMoveToPoint(c,8,5);CGContextAddLineToPoint(c,19,12);
+        CGContextAddLineToPoint(c,8,19);CGContextClosePath(c);
+    }else if(type==8){ // pause
+        CGContextMoveToPoint(c,8,5);CGContextAddLineToPoint(c,8,19);
+        CGContextMoveToPoint(c,16,5);CGContextAddLineToPoint(c,16,19);
+    }else if(type==9){ // replay
+        CGContextAddArc(c,12,12,8,-2.3,3.3,0);
+        CGContextMoveToPoint(c,3,5);CGContextAddLineToPoint(c,4,11);
+        CGContextAddLineToPoint(c,10,9);
+    }else if(type==10){ // back
+        CGContextMoveToPoint(c,15,4);CGContextAddLineToPoint(c,7,12);CGContextAddLineToPoint(c,15,20);
+    }else if(type==11){ // more
+        CGContextAddEllipseInRect(c,CGRectMake(3,10,3,3));
+        CGContextAddEllipseInRect(c,CGRectMake(10.5,10,3,3));
+        CGContextAddEllipseInRect(c,CGRectMake(18,10,3,3));
+    }else if(type==12){ // expand
+        CGContextMoveToPoint(c,4,10);CGContextAddLineToPoint(c,4,4);CGContextAddLineToPoint(c,10,4);
+        CGContextMoveToPoint(c,14,4);CGContextAddLineToPoint(c,20,4);CGContextAddLineToPoint(c,20,10);
+        CGContextMoveToPoint(c,4,14);CGContextAddLineToPoint(c,4,20);CGContextAddLineToPoint(c,10,20);
+        CGContextMoveToPoint(c,14,20);CGContextAddLineToPoint(c,20,20);CGContextAddLineToPoint(c,20,14);
     }
     CGContextStrokePath(c);UIImage *image=UIGraphicsGetImageFromCurrentImageContext();UIGraphicsEndImageContext();return image;
 }
