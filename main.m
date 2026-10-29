@@ -451,6 +451,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 @property(nonatomic,assign) BOOL holdingSpeed;
 @property(nonatomic,assign) BOOL wasPlaying;
 @property(nonatomic,strong) UILabel *gestureHint;
+@property(nonatomic,strong) UILabel *speedHint;
 @property(nonatomic,assign) CGFloat gestureStart;
 @property(nonatomic,assign) BOOL brightnessGesture;
 @end
@@ -560,6 +561,17 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     self.statusText.numberOfLines=2;
     self.statusText.text=self.sharedPlayer?@"":@"正在加载…";
     [self.view addSubview:self.statusText];
+    self.speedHint=[[UILabel alloc] initWithFrame:CGRectZero];
+    self.speedHint.text=@"2×";
+    self.speedHint.font=[UIFont boldSystemFontOfSize:13];
+    self.speedHint.textColor=[UIColor whiteColor];
+    self.speedHint.textAlignment=NSTextAlignmentCenter;
+    self.speedHint.backgroundColor=[UIColor colorWithWhite:0 alpha:.42];
+    self.speedHint.layer.cornerRadius=8;
+    self.speedHint.clipsToBounds=YES;
+    self.speedHint.userInteractionEnabled=NO;
+    self.speedHint.alpha=0;
+    [self.view addSubview:self.speedHint];
     [self positionControls];
     self.controlsVisible=YES;
     if(!self.sharedPlayer){
@@ -585,6 +597,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     self.playButton.frame=CGRectMake((w-54)/2,(h-54)/2,54,54);
     self.statusText.frame=CGRectMake(MAX(8,(w-260)/2),MAX(49,(h-54)/2+64),MIN(260,w-16),38);
     self.gestureHint.frame=CGRectMake((w-116)/2,MAX(52,h*.18),116,28);
+    self.speedHint.frame=CGRectMake(MAX(8,w-68),52,56,26);
 }
 - (void)closePlayer {
     [self storePosition];
@@ -690,16 +703,22 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
         [self performSelector:@selector(hideGestureHint) withObject:nil afterDelay:.45];
     }
 }
+- (void)hideSpeedHint {
+    [UIView animateWithDuration:.15 animations:^{self.speedHint.alpha=0;}];
+}
 - (void)heldVideo:(UILongPressGestureRecognizer *)g {
     if(self.liveStream)return;
     if(g.state==UIGestureRecognizerStateBegan){
         self.holdingSpeed=YES;self.wasPlaying=[self playing];
         if(self.wasPlaying)self.player.rate=2;
-        self.gestureHint.text=@"2×";self.gestureHint.alpha=1;
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hideSpeedHint) object:nil];
+        self.speedHint.alpha=1;
+        [self performSelector:@selector(hideSpeedHint) withObject:nil afterDelay:.65];
     }else if(g.state==UIGestureRecognizerStateEnded||g.state==UIGestureRecognizerStateCancelled){
         self.holdingSpeed=NO;
         if(self.wasPlaying)self.player.rate=self.speed;
-        [self hideGestureHint];
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hideSpeedHint) object:nil];
+        [self hideSpeedHint];
         [self scheduleHide];
     }
 }
