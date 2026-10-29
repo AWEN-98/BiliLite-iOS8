@@ -841,10 +841,8 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 - (void)dealloc {
     [self.saveTimer invalidate];
     if(self.timeObserver && self.player)[self.player removeTimeObserver:self.timeObserver];
-    if(self.observingStatus && self.playerItem){
-        @try { [self.playerItem removeObserver:self forKeyPath:@"status" context:BLPlayerItemStatusContext]; }
-        @catch(NSException *exception) {}
-    }
+    if(self.observingStatus && self.playerItem)
+        [self.playerItem removeObserver:self forKeyPath:@"status" context:BLPlayerItemStatusContext];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 @end
