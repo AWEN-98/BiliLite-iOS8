@@ -418,433 +418,509 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 + (Class)layerClass { return [AVPlayerLayer class]; }
 @end
 
+
+// A single shared AVPlayer allows seamless inline -> fullscreen -> inline
+// playback without restarting the network stream or losing position.
 @interface BLPlayerController : UIViewController
 @property(nonatomic,strong) AVPlayer *player;
 @property(nonatomic,strong) AVPlayerItem *playerItem;
-@property(nonatomic,strong) BLPlayerSurface *videoSurface;
-@property(nonatomic,strong) UIView *topBar;
-@property(nonatomic,strong) UIView *bottomBar;
-@property(nonatomic,strong) UIButton *closeButton;
-@property(nonatomic,strong) UIButton *playControlButton;
-@property(nonatomic,strong) UIButton *centerButton;
-@property(nonatomic,strong) UIButton *rewindButton;
-@property(nonatomic,strong) UIButton *forwardButton;
-@property(nonatomic,strong) UIButton *speedButton;
-@property(nonatomic,strong) UILabel *titleLabel;
-@property(nonatomic,strong) UILabel *liveBadge;
-@property(nonatomic,strong) UILabel *statusLabel;
-@property(nonatomic,strong) UILabel *currentTimeLabel;
-@property(nonatomic,strong) UILabel *durationLabel;
-@property(nonatomic,strong) UISlider *progressSlider;
-@property(nonatomic,strong) NSURL *contentURL;
-@property(nonatomic,copy) NSString *videoKey;
+@property(nonatomic,strong) BLPlayerSurface *surface;
+@property(nonatomic,strong) UIView *topControls;
+@property(nonatomic,strong) UIView *bottomControls;
+@property(nonatomic,strong) UIButton *dismissButton;
+@property(nonatomic,strong) UIButton *playButton;
+@property(nonatomic,strong) UIButton *settingsButton;
+@property(nonatomic,strong) UILabel *titleText;
+@property(nonatomic,strong) UILabel *positionText;
+@property(nonatomic,strong) UILabel *statusText;
+@property(nonatomic,strong) UISlider *slider;
 @property(nonatomic,copy) NSString *videoTitle;
+@property(nonatomic,copy) NSString *videoKey;
 @property(nonatomic,copy) NSString *qualityLabel;
-@property(nonatomic,assign) BOOL liveStream;
-@property(nonatomic,assign) BOOL controlsVisible;
-@property(nonatomic,assign) BOOL seeking;
-@property(nonatomic,assign) BOOL holdingSpeed;
-@property(nonatomic,assign) BOOL wasPlayingBeforeHold;
-@property(nonatomic,assign) BOOL didStartPlayback;
-@property(nonatomic,assign) BOOL completedPlayback;
-@property(nonatomic,assign) BOOL observingStatus;
-@property(nonatomic,assign) float preferredRate;
-@property(nonatomic,assign) NSTimeInterval resumeAt;
-@property(nonatomic,strong) NSTimer *saveTimer;
+@property(nonatomic,strong) NSURL *contentURL;
 @property(nonatomic,strong) NSTimer *uiTimer;
+@property(nonatomic,assign) NSTimeInterval resumeAt;
+@property(nonatomic,assign) float speed;
+@property(nonatomic,assign) BOOL liveStream;
+@property(nonatomic,assign) BOOL sharedPlayer;
+@property(nonatomic,assign) BOOL observingStatus;
+@property(nonatomic,assign) BOOL started;
+@property(nonatomic,assign) BOOL dragging;
+@property(nonatomic,assign) BOOL controlsVisible;
+@property(nonatomic,assign) BOOL holdingSpeed;
+@property(nonatomic,assign) BOOL wasPlaying;
 @end
 
 @implementation BLPlayerController
 - (instancetype)initWithContentURL:(NSURL *)url {
-    if((self=[super init])){
-        self.contentURL=url;
-        self.preferredRate=1.0f;
-        self.modalPresentationStyle=UIModalPresentationFullScreen;
-    }
+    if((self=[super init])){self.contentURL=url;self.speed=1.0f;self.modalPresentationStyle=UIModalPresentationFullScreen;}
     return self;
 }
-- (BOOL)shouldAutorotate { return YES; }
-- (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
-- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation { return UIInterfaceOrientationLandscapeRight; }
-- (BOOL)prefersStatusBarHidden { return YES; }
-- (UIButton *)makeButton:(NSString *)title action:(SEL)action {
+- (instancetype)initWithExistingPlayer:(AVPlayer *)player {
+    if((self=[super init])){self.player=player;self.sharedPlayer=YES;self.speed=1.0f;self.modalPresentationStyle=UIModalPresentationFullScreen;}
+    return self;
+}
+- (BOOL)shouldAutorotate {return YES;}
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {return UIInterfaceOrientationMaskLandscape;}
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {return UIInterfaceOrientationLandscapeRight;}
+- (BOOL)prefersStatusBarHidden {return YES;}
+- (UIButton *)actionButton:(NSString *)title selector:(SEL)selector {
     UIButton *button=[UIButton buttonWithType:UIButtonTypeCustom];
-    button.backgroundColor=[UIColor colorWithWhite:1 alpha:.12];
-    button.layer.cornerRadius=7;
-    button.titleLabel.font=[UIFont boldSystemFontOfSize:13];
+    button.titleLabel.font=[UIFont boldSystemFontOfSize:15];
     [button setTitle:title forState:UIControlStateNormal];
     [button setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    [button addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
     return button;
-}
-- (UILabel *)makeLabel:(CGFloat)size color:(UIColor *)color {
-    UILabel *label=[[UILabel alloc] initWithFrame:CGRectZero];
-    label.font=[UIFont systemFontOfSize:size];
-    label.textColor=color;
-    label.backgroundColor=[UIColor clearColor];
-    return label;
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor=[UIColor blackColor];
-    self.preferredRate=MAX(.5f,self.preferredRate);
-    if(!self.contentURL){self.statusLabel.text=@"没有可播放的视频地址";return;}
-
-    self.playerItem=[AVPlayerItem playerItemWithURL:self.contentURL];
-    self.player=[AVPlayer playerWithPlayerItem:self.playerItem];
-
-    self.videoSurface=[[BLPlayerSurface alloc] initWithFrame:self.view.bounds];
-    self.videoSurface.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-    self.videoSurface.backgroundColor=[UIColor blackColor];
-    ((AVPlayerLayer *)self.videoSurface.layer).player=self.player;
-    ((AVPlayerLayer *)self.videoSurface.layer).videoGravity=AVLayerVideoGravityResizeAspect;
-    [self.view addSubview:self.videoSurface];
-
-    UITapGestureRecognizer *tap=[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(playerTapped:)];
+    if(!self.player && self.contentURL){
+        self.playerItem=[AVPlayerItem playerItemWithURL:self.contentURL];
+        self.player=[AVPlayer playerWithPlayerItem:self.playerItem];
+    }else self.playerItem=self.player.currentItem;
+    if(!self.playerItem)return;
+    self.surface=[[BLPlayerSurface alloc] initWithFrame:self.view.bounds];
+    self.surface.backgroundColor=[UIColor blackColor];
+    self.surface.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    AVPlayerLayer *layer=(AVPlayerLayer *)self.surface.layer;
+    layer.player=self.player;
+    layer.videoGravity=AVLayerVideoGravityResizeAspect;
+    [self.view addSubview:self.surface];
+    UITapGestureRecognizer *tap=[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tappedVideo:)];
     tap.cancelsTouchesInView=NO;
-    [self.videoSurface addGestureRecognizer:tap];
+    [self.surface addGestureRecognizer:tap];
     if(!self.liveStream){
-        UILongPressGestureRecognizer *hold=[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(holdToSpeed:)];
-        hold.minimumPressDuration=.42;
+        UILongPressGestureRecognizer *hold=[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(heldVideo:)];
+        hold.minimumPressDuration=.4;
         hold.cancelsTouchesInView=NO;
-        [self.videoSurface addGestureRecognizer:hold];
+        [self.surface addGestureRecognizer:hold];
     }
+    self.topControls=[[UIView alloc] initWithFrame:CGRectZero];
+    self.topControls.backgroundColor=[UIColor colorWithWhite:0 alpha:.60];
+    [self.view addSubview:self.topControls];
+    self.dismissButton=[self actionButton:@"‹ 返回" selector:@selector(closePlayer)];
+    [self.topControls addSubview:self.dismissButton];
+    self.titleText=[[UILabel alloc] initWithFrame:CGRectZero];
+    self.titleText.text=self.liveStream?@"● 正在直播":(self.videoTitle.length?self.videoTitle:@"视频播放");
+    self.titleText.textColor=[UIColor whiteColor];
+    self.titleText.font=[UIFont boldSystemFontOfSize:13];
+    self.titleText.lineBreakMode=NSLineBreakByTruncatingTail;
+    [self.topControls addSubview:self.titleText];
+    self.settingsButton=[self actionButton:@"•••" selector:@selector(openSettings)];
+    [self.topControls addSubview:self.settingsButton];
 
+    self.bottomControls=[[UIView alloc] initWithFrame:CGRectZero];
+    self.bottomControls.backgroundColor=[UIColor colorWithWhite:0 alpha:.56];
+    [self.view addSubview:self.bottomControls];
+    self.slider=[[UISlider alloc] initWithFrame:CGRectZero];
+    self.slider.minimumValue=0;self.slider.maximumValue=1;
+    self.slider.minimumTrackTintColor=BLPink();
+    self.slider.maximumTrackTintColor=[UIColor colorWithWhite:1 alpha:.36];
+    [self.slider addTarget:self action:@selector(seekBegan) forControlEvents:UIControlEventTouchDown];
+    [self.slider addTarget:self action:@selector(seekChanged) forControlEvents:UIControlEventValueChanged];
+    [self.slider addTarget:self action:@selector(seekEnded) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchCancel];
+    [self.bottomControls addSubview:self.slider];
+    self.positionText=[[UILabel alloc] initWithFrame:CGRectZero];
+    self.positionText.font=[UIFont systemFontOfSize:11];
+    self.positionText.textColor=[UIColor whiteColor];
+    self.positionText.textAlignment=NSTextAlignmentCenter;
+    self.positionText.text=self.liveStream?@"直播中":@"00:00 / 00:00";
+    [self.bottomControls addSubview:self.positionText];
+    if(self.liveStream){self.slider.hidden=YES;self.settingsButton.hidden=YES;}
+    self.playButton=[self actionButton:@"Ⅱ" selector:@selector(togglePlaying)];
+    self.playButton.titleLabel.font=[UIFont systemFontOfSize:27];
+    self.playButton.backgroundColor=[UIColor colorWithWhite:0 alpha:.52];
+    self.playButton.layer.cornerRadius=27;
+    [self.view addSubview:self.playButton];
+
+    self.statusText=[[UILabel alloc] initWithFrame:CGRectZero];
+    self.statusText.textAlignment=NSTextAlignmentCenter;
+    self.statusText.font=[UIFont systemFontOfSize:12];
+    self.statusText.textColor=[UIColor whiteColor];
+    self.statusText.backgroundColor=[UIColor colorWithWhite:0 alpha:.52];
+    self.statusText.numberOfLines=2;
+    self.statusText.text=self.sharedPlayer?@"":@"正在加载…";
+    [self.view addSubview:self.statusText];
+    [self positionControls];
     self.controlsVisible=YES;
-    self.topBar=[[UIView alloc] initWithFrame:CGRectZero];
-    self.topBar.backgroundColor=[UIColor colorWithWhite:0 alpha:.68];
-    [self.view addSubview:self.topBar];
-    self.closeButton=[self makeButton:@"‹ 返回" action:@selector(closePlayer)];
-    [self.topBar addSubview:self.closeButton];
-    self.titleLabel=[self makeLabel:13 color:[UIColor whiteColor]];
-    self.titleLabel.font=[UIFont boldSystemFontOfSize:13];
-    self.titleLabel.lineBreakMode=NSLineBreakByTruncatingTail;
-    NSString *displayTitle=self.videoTitle.length?self.videoTitle:@"BiliLite 播放器";
-    if(self.qualityLabel.length && !self.liveStream)displayTitle=[displayTitle stringByAppendingFormat:@" · %@",self.qualityLabel];
-    self.titleLabel.text=displayTitle;
-    [self.topBar addSubview:self.titleLabel];
-
-    if(self.liveStream){
-        self.liveBadge=[self makeLabel:12 color:[UIColor whiteColor]];
-        self.liveBadge.text=@"● 直播中";
-        self.liveBadge.textAlignment=NSTextAlignmentCenter;
-        self.liveBadge.backgroundColor=[UIColor colorWithRed:.82 green:.12 blue:.24 alpha:.94];
-        self.liveBadge.layer.cornerRadius=7;
-        self.liveBadge.clipsToBounds=YES;
-        [self.topBar addSubview:self.liveBadge];
+    if(!self.sharedPlayer){
+        [self.playerItem addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionInitial context:BLPlayerItemStatusContext];
+        self.observingStatus=YES;
     }
-
-    self.bottomBar=[[UIView alloc] initWithFrame:CGRectZero];
-    self.bottomBar.backgroundColor=[UIColor colorWithWhite:0 alpha:.72];
-    [self.view addSubview:self.bottomBar];
-    self.progressSlider=[[UISlider alloc] initWithFrame:CGRectZero];
-    self.progressSlider.minimumValue=0;
-    self.progressSlider.maximumValue=1;
-    self.progressSlider.minimumTrackTintColor=BLPink();
-    self.progressSlider.maximumTrackTintColor=[UIColor colorWithWhite:1 alpha:.32];
-    [self.progressSlider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
-    [self.progressSlider addTarget:self action:@selector(sliderTouchDown:) forControlEvents:UIControlEventTouchDown];
-    [self.progressSlider addTarget:self action:@selector(sliderReleased:) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchCancel];
-    [self.bottomBar addSubview:self.progressSlider];
-    self.currentTimeLabel=[self makeLabel:10 color:[UIColor colorWithWhite:1 alpha:.88]];
-    self.currentTimeLabel.text=@"00:00";
-    [self.bottomBar addSubview:self.currentTimeLabel];
-    self.durationLabel=[self makeLabel:10 color:[UIColor colorWithWhite:1 alpha:.88]];
-    self.durationLabel.text=@"00:00";
-    self.durationLabel.textAlignment=NSTextAlignmentRight;
-    [self.bottomBar addSubview:self.durationLabel];
-
-    self.playControlButton=[self makeButton:@"▶" action:@selector(togglePlayback)];
-    [self.bottomBar addSubview:self.playControlButton];
-    self.rewindButton=[self makeButton:@"−15s" action:@selector(seekBackward)];
-    [self.bottomBar addSubview:self.rewindButton];
-    self.forwardButton=[self makeButton:@"+15s" action:@selector(seekForward)];
-    [self.bottomBar addSubview:self.forwardButton];
-    self.speedButton=[self makeButton:@"1.0×" action:@selector(changeSpeed)];
-    [self.bottomBar addSubview:self.speedButton];
-
-    self.centerButton=[UIButton buttonWithType:UIButtonTypeCustom];
-    self.centerButton.backgroundColor=[UIColor colorWithWhite:0 alpha:.58];
-    self.centerButton.layer.cornerRadius=34;
-    self.centerButton.layer.borderWidth=1;
-    self.centerButton.layer.borderColor=[UIColor colorWithWhite:1 alpha:.35].CGColor;
-    self.centerButton.titleLabel.font=[UIFont systemFontOfSize:30];
-    [self.centerButton setTitle:@"▶" forState:UIControlStateNormal];
-    [self.centerButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    [self.centerButton addTarget:self action:@selector(togglePlayback) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.centerButton];
-
-    self.statusLabel=[self makeLabel:12 color:[UIColor whiteColor]];
-    self.statusLabel.textAlignment=NSTextAlignmentCenter;
-    self.statusLabel.numberOfLines=2;
-    self.statusLabel.backgroundColor=[UIColor colorWithWhite:0 alpha:.48];
-    self.statusLabel.layer.cornerRadius=6;
-    self.statusLabel.clipsToBounds=YES;
-    self.statusLabel.text=@"正在加载视频…";
-    [self.view addSubview:self.statusLabel];
-
-    if(self.liveStream){
-        self.progressSlider.hidden=YES;
-        self.currentTimeLabel.hidden=YES;
-        self.durationLabel.hidden=YES;
-        self.rewindButton.hidden=YES;
-        self.forwardButton.hidden=YES;
-        self.speedButton.hidden=YES;
-        self.currentTimeLabel.text=@"直播中";
-    }
-
-    [self positionControls];
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(itemEnded:)
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playbackEnded:)
         name:AVPlayerItemDidPlayToEndTimeNotification object:self.playerItem];
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(itemFailed:)
-        name:AVPlayerItemFailedToPlayToEndTimeNotification object:self.playerItem];
-    [self.playerItem addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionInitial|NSKeyValueObservingOptionNew context:BLPlayerItemStatusContext];
-    self.observingStatus=YES;
-
-    self.uiTimer=[NSTimer scheduledTimerWithTimeInterval:.5 target:self selector:@selector(playerTick) userInfo:nil repeats:YES];
-    self.saveTimer=[NSTimer scheduledTimerWithTimeInterval:8 target:self selector:@selector(savePosition) userInfo:nil repeats:YES];
-    [self setNeedsStatusBarAppearanceUpdate];
+    self.uiTimer=[NSTimer scheduledTimerWithTimeInterval:.5 target:self selector:@selector(tick) userInfo:nil repeats:YES];
+    [self tick];
+    if(self.sharedPlayer && self.player.rate>0)[self scheduleHide];
 }
-- (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
-    [self positionControls];
-}
+- (void)viewDidLayoutSubviews {[super viewDidLayoutSubviews];[self positionControls];}
 - (void)positionControls {
     CGFloat w=self.view.bounds.size.width,h=self.view.bounds.size.height;
-    if(w<1 || h<1)return;
-    self.topBar.frame=CGRectMake(0,0,w,46);
-    self.closeButton.frame=CGRectMake(8,4,62,38);
-    self.titleLabel.frame=CGRectMake(76,5,MAX(80,w-184),36);
-    self.liveBadge.frame=CGRectMake(MAX(8,w-91),9,82,28);
-    CGFloat bottomHeight=94;
-    self.bottomBar.frame=CGRectMake(0,MAX(0,h-bottomHeight),w,bottomHeight);
-    self.progressSlider.frame=CGRectMake(12,2,MAX(40,w-24),25);
-    self.currentTimeLabel.frame=CGRectMake(13,25,70,18);
-    self.durationLabel.frame=CGRectMake(MAX(75,w-83),25,70,18);
-    self.playControlButton.frame=CGRectMake(12,48,42,38);
-    self.rewindButton.frame=CGRectMake(61,48,48,38);
-    self.forwardButton.frame=CGRectMake(116,48,48,38);
-    self.speedButton.frame=CGRectMake(MAX(172,w-86),48,74,38);
-    self.centerButton.frame=CGRectMake((w-68)/2,(h-68)/2,68,68);
-    self.statusLabel.frame=CGRectMake(MAX(12,(w-270)/2),CGRectGetMaxY(self.centerButton.frame)+8,MIN(270,w-24),38);
+    self.topControls.frame=CGRectMake(0,0,w,44);
+    self.dismissButton.frame=CGRectMake(8,3,65,38);
+    self.titleText.frame=CGRectMake(78,5,MAX(30,w-133),34);
+    self.settingsButton.frame=CGRectMake(w-52,3,46,38);
+    self.bottomControls.frame=CGRectMake(0,MAX(0,h-56),w,56);
+    self.slider.frame=CGRectMake(12,3,MAX(40,w-24),29);
+    self.positionText.frame=CGRectMake(12,31,w-24,20);
+    self.playButton.frame=CGRectMake((w-54)/2,(h-54)/2,54,54);
+    self.statusText.frame=CGRectMake(MAX(8,(w-260)/2),MAX(49,(h-54)/2+64),MIN(260,w-16),38);
 }
 - (void)closePlayer {
-    [self savePosition];
-    [self.player pause];
+    [self storePosition];
+    if(!self.sharedPlayer)[self.player pause];
     [self dismissViewControllerAnimated:YES completion:nil];
 }
-- (BOOL)isActuallyPlaying { return self.player && self.player.rate>.01f; }
-- (void)updatePlaybackUI {
-    BOOL playing=[self isActuallyPlaying];
-    [self.playControlButton setTitle:playing?@"Ⅱ":@"▶" forState:UIControlStateNormal];
-    self.centerButton.hidden=playing;
-    if(self.liveStream)self.currentTimeLabel.text=@"直播中";
-    
-}
-- (void)togglePlayback {
-    if([self isActuallyPlaying]){
-        [self.player pause];
-        [self showControls];
-    }else{
-        if(self.player.currentItem.status==AVPlayerItemStatusFailed){
-            self.statusLabel.text=@"播放失败，请返回后重试或切换清晰度";
-            return;
-        }
+- (BOOL)playing {return self.player.rate>.01f;}
+- (void)togglePlaying {
+    if([self playing]) [self.player pause];
+    else{
         [self.player play];
-        self.player.rate=self.preferredRate;
-        self.statusLabel.text=@"";
-        [self showControls];
+        self.player.rate=self.speed;
     }
-    [self updatePlaybackUI];
+    [self revealControls];
+    [self tick];
 }
-- (void)playerTapped:(UITapGestureRecognizer *)gesture {
-    if(gesture.state!=UIGestureRecognizerStateEnded)return;
-    if(self.controlsVisible)[self hideControls];
-    else [self showControls];
+- (void)tappedVideo:(UITapGestureRecognizer *)g {
+    if(g.state!=UIGestureRecognizerStateEnded)return;
+    if(self.controlsVisible)[self concealControls];else[self revealControls];
 }
-- (void)showControls {
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hideControls) object:nil];
+- (void)revealControls {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(concealControls) object:nil];
     self.controlsVisible=YES;
-    self.topBar.userInteractionEnabled=YES;
-    self.bottomBar.userInteractionEnabled=YES;
-    [UIView animateWithDuration:.18 animations:^{self.topBar.alpha=1;self.bottomBar.alpha=1;}];
-    if([self isActuallyPlaying])[self performSelector:@selector(hideControls) withObject:nil afterDelay:4.0];
+    self.topControls.userInteractionEnabled=YES;
+    self.bottomControls.userInteractionEnabled=YES;
+    [UIView animateWithDuration:.18 animations:^{self.topControls.alpha=1;self.bottomControls.alpha=1;}];
+    [self scheduleHide];
 }
-- (void)hideControls {
-    if(self.seeking || ![self isActuallyPlaying])return;
+- (void)scheduleHide {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(concealControls) object:nil];
+    if([self playing]&&!self.dragging && !self.holdingSpeed)
+        [self performSelector:@selector(concealControls) withObject:nil afterDelay:3.2];
+}
+- (void)concealControls {
+    if(![self playing]||self.dragging||self.holdingSpeed)return;
     self.controlsVisible=NO;
-    [UIView animateWithDuration:.22 animations:^{self.topBar.alpha=0;self.bottomBar.alpha=0;} completion:^(BOOL finished){
-        if(!self.controlsVisible){self.topBar.userInteractionEnabled=NO;self.bottomBar.userInteractionEnabled=NO;}
+    [UIView animateWithDuration:.2 animations:^{
+        self.topControls.alpha=0;self.bottomControls.alpha=0;self.playButton.alpha=0;
+    } completion:^(BOOL finished){
+        if(!self.controlsVisible){self.topControls.userInteractionEnabled=NO;self.bottomControls.userInteractionEnabled=NO;}
     }];
 }
-- (void)seekBackward { [self seekBySeconds:-15]; }
-- (void)seekForward { [self seekBySeconds:15]; }
-- (void)seekBySeconds:(NSTimeInterval)delta {
-    if(self.liveStream || !self.playerItem)return;
-    NSTimeInterval duration=CMTimeGetSeconds(self.playerItem.duration);
-    NSTimeInterval current=CMTimeGetSeconds(self.player.currentTime);
-    if(!isfinite(duration)||duration<=0||!isfinite(current))return;
-    NSTimeInterval target=MAX(0,MIN(duration,current+delta));
-    [self.player seekToTime:CMTimeMakeWithSeconds(target,600) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
-    [self showControls];
-    [self updateTimeline];
+- (NSTimeInterval)duration {
+    Float64 n=CMTimeGetSeconds(self.playerItem.duration);
+    return isfinite(n)&&n>0?n:0;
 }
-- (NSTimeInterval)durationSeconds {
-    NSTimeInterval duration=CMTimeGetSeconds(self.playerItem.duration);
-    return isfinite(duration)&&duration>0?duration:0;
+- (NSString *)formatted:(NSTimeInterval)seconds {
+    NSInteger n=(NSInteger)MAX(0,seconds);
+    return n>=3600?[NSString stringWithFormat:@"%ld:%02ld:%02ld",(long)(n/3600),(long)((n/60)%60),(long)(n%60)]:
+        [NSString stringWithFormat:@"%02ld:%02ld",(long)(n/60),(long)(n%60)];
 }
-- (NSString *)timeString:(NSTimeInterval)seconds {
-    if(!isfinite(seconds)||seconds<0)seconds=0;
-    NSInteger whole=(NSInteger)seconds;
-    NSInteger hours=whole/3600,minutes=(whole%3600)/60,secs=whole%60;
-    return hours>0?[NSString stringWithFormat:@"%ld:%02ld:%02ld",(long)hours,(long)minutes,(long)secs]:
-        [NSString stringWithFormat:@"%02ld:%02ld",(long)minutes,(long)secs];
-}
-- (void)playerTick {
-    [self updateTimeline];
-    [self updatePlaybackUI];
-}
-- (void)updateTimeline {
-    if(!self.playerItem)return;
-    NSTimeInterval current=CMTimeGetSeconds(self.player.currentTime);
-    NSTimeInterval duration=[self durationSeconds];
-    if(!isfinite(current)||current<0)current=0;
-    if(!self.liveStream){
-        self.currentTimeLabel.text=[self timeString:current];
-        self.durationLabel.text=[self timeString:duration];
-        if(duration>0 && !self.seeking)self.progressSlider.value=(float)MIN(1.0,MAX(0.0,current/duration));
-    }
-}
-- (void)sliderTouchDown:(UISlider *)slider {
-    self.seeking=YES;
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hideControls) object:nil];
-}
-- (void)sliderChanged:(UISlider *)slider {
-    NSTimeInterval duration=[self durationSeconds];
-    self.currentTimeLabel.text=[self timeString:duration*slider.value];
-}
-- (void)sliderReleased:(UISlider *)slider {
-    NSTimeInterval duration=[self durationSeconds];
-    if(duration>0){
-        NSTimeInterval target=duration*slider.value;
-        [self.player seekToTime:CMTimeMakeWithSeconds(target,600) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
-    }
-    self.seeking=NO;
-    [self updateTimeline];
-    [self showControls];
-}
-- (void)changeSpeed {
+- (void)tick {
+    BOOL playing=[self playing];
+    [self.playButton setTitle:playing?@"Ⅱ":@"▶" forState:UIControlStateNormal];
+    if(!playing){self.playButton.alpha=1;self.playButton.userInteractionEnabled=YES;}
+    else {self.playButton.alpha=self.controlsVisible?1:0;self.playButton.userInteractionEnabled=self.controlsVisible;}
     if(self.liveStream)return;
-    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"播放倍速" message:@"选择播放速度" preferredStyle:UIAlertControllerStyleActionSheet];
-    NSArray *speeds=@[@0.5,@0.75,@1.0,@1.25,@1.5,@2.0];
-    for(NSNumber *number in speeds){
-        float rate=[number floatValue];
-        NSString *title=[NSString stringWithFormat:@"%.2g×%@",rate,(fabsf(rate-self.preferredRate)<.01f?@"  ✓":@"")];
+    NSTimeInterval d=[self duration],t=CMTimeGetSeconds(self.player.currentTime);
+    if(!isfinite(t)||t<0)t=0;
+    if(!self.dragging){self.slider.value=d>0?(float)MIN(1,t/d):0;self.positionText.text=[NSString stringWithFormat:@"%@ / %@",[self formatted:t],[self formatted:d]];}
+}
+- (void)seekBegan {self.dragging=YES;[NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(concealControls) object:nil];}
+- (void)seekChanged {NSTimeInterval d=[self duration];self.positionText.text=[NSString stringWithFormat:@"%@ / %@",[self formatted:d*self.slider.value],[self formatted:d]];}
+- (void)seekEnded {
+    NSTimeInterval d=[self duration];self.dragging=NO;
+    if(d>0)[self.player seekToTime:CMTimeMakeWithSeconds(d*self.slider.value,600)];
+    [self revealControls];
+}
+- (void)openSettings {
+    if(self.liveStream)return;
+    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"播放设置" message:self.qualityLabel.length?[NSString stringWithFormat:@"清晰度：%@（详情页可切换）",self.qualityLabel]:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    for(NSNumber *v in @[@0.75,@1.0,@1.25,@1.5,@2.0]){
+        float rate=[v floatValue];
+        NSString *title=[NSString stringWithFormat:@"%.2g×%@",rate,fabsf(rate-self.speed)<.01?@"  ✓":@""];
         [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
-            BOOL wasPlaying=[self isActuallyPlaying];
-            self.preferredRate=rate;
-            [self.speedButton setTitle:[NSString stringWithFormat:@"%.2g×",rate] forState:UIControlStateNormal];
-            if(wasPlaying)self.player.rate=rate;
-            [self showControls];
+            self.speed=rate;if([self playing])self.player.rate=rate;
+            [self revealControls];
         }]];
     }
     [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:menu animated:YES completion:nil];
 }
-- (void)holdToSpeed:(UILongPressGestureRecognizer *)gesture {
+- (void)heldVideo:(UILongPressGestureRecognizer *)g {
     if(self.liveStream)return;
-    if(gesture.state==UIGestureRecognizerStateBegan){
-        self.wasPlayingBeforeHold=[self isActuallyPlaying];
-        self.holdingSpeed=YES;
-        [self showControls];
-        if(self.wasPlayingBeforeHold)self.player.rate=2.0f;
-        [self.speedButton setTitle:@"按住 2×" forState:UIControlStateNormal];
-    }else if(gesture.state==UIGestureRecognizerStateEnded||gesture.state==UIGestureRecognizerStateCancelled||gesture.state==UIGestureRecognizerStateFailed){
+    if(g.state==UIGestureRecognizerStateBegan){
+        self.holdingSpeed=YES;self.wasPlaying=[self playing];
+        if(self.wasPlaying)self.player.rate=2;
+        self.statusText.text=@"2× 快进";[self revealControls];
+    }else if(g.state==UIGestureRecognizerStateEnded||g.state==UIGestureRecognizerStateCancelled){
         self.holdingSpeed=NO;
-        if(self.wasPlayingBeforeHold)self.player.rate=self.preferredRate;
-        [self.speedButton setTitle:[NSString stringWithFormat:@"%.2g×",self.preferredRate] forState:UIControlStateNormal];
-        [self showControls];
+        if(self.wasPlaying)self.player.rate=self.speed;
+        self.statusText.text=@"";
+        [self scheduleHide];
     }
 }
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
     if(context!=BLPlayerItemStatusContext){[super observeValueForKeyPath:keyPath ofObject:object change:change context:context];return;}
     AVPlayerItem *item=(AVPlayerItem *)object;
     if(item!=self.playerItem)return;
-    AVPlayerItemStatus status=item.status;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if(item!=self.playerItem)return;
-        if(status==AVPlayerItemStatusReadyToPlay){
-            self.statusLabel.text=@"";
-            if(!self.didStartPlayback){
-                self.didStartPlayback=YES;
-                NSTimeInterval resume=self.resumeAt;
-                if(!self.liveStream && resume>5){
-                    NSTimeInterval duration=[self durationSeconds];
-                    if(duration>0 && resume<duration-8){
-                        [self.player seekToTime:CMTimeMakeWithSeconds(resume,600) completionHandler:^(BOOL finished){
-                            [self.player play];self.player.rate=self.preferredRate;[self updatePlaybackUI];[self updateTimeline];
-                        }];
-                    }else{
-                        [self.player play];self.player.rate=self.preferredRate;
-                    }
-                }else{
-                    [self.player play];self.player.rate=self.preferredRate;
-                }
-                [self updatePlaybackUI];
-                [self showControls];
-            }
-        }else if(status==AVPlayerItemStatusFailed){
-            NSString *reason=item.error.localizedDescription.length?item.error.localizedDescription:@"视频编码不受支持或播放地址已失效";
-            self.statusLabel.text=[NSString stringWithFormat:@"无法播放\n%@",reason];
-            [self updatePlaybackUI];
-        }else{
-            self.statusLabel.text=@"正在连接视频源…";
+    if(item.status==AVPlayerItemStatusReadyToPlay){
+        self.statusText.text=@"";
+        if(!self.started){
+            self.started=YES;
+            if(!self.liveStream && self.resumeAt>5 && self.resumeAt<[self duration]-8)
+                [self.player seekToTime:CMTimeMakeWithSeconds(self.resumeAt,600)];
+            [self.player play];
+            [self scheduleHide];
         }
-    });
+    }else if(item.status==AVPlayerItemStatusFailed){
+        self.statusText.text=item.error.localizedDescription?:@"格式或网络不兼容";
+        [self.player pause];[self revealControls];
+    }
 }
-- (void)itemEnded:(NSNotification *)notification {
-    self.completedPlayback=YES;
-    self.statusLabel.text=@"播放结束";
+- (void)playbackEnded:(NSNotification *)note {
+    self.statusText.text=@"播放完毕";
+    [self.player pause];
     if(self.videoKey.length){
         NSMutableDictionary *saved=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"bl_playback_positions"] mutableCopy]?:[NSMutableDictionary dictionary];
         [saved removeObjectForKey:self.videoKey];
         [[NSUserDefaults standardUserDefaults] setObject:saved forKey:@"bl_playback_positions"];
     }
-    [self updatePlaybackUI];
+    [self revealControls];
 }
-- (void)itemFailed:(NSNotification *)notification {
-    self.statusLabel.text=@"播放中断，视频地址可能已过期或编码不兼容";
-    [self.player pause];
-    [self updatePlaybackUI];
-}
-- (void)savePosition {
-    if(!self.videoKey.length || self.completedPlayback || self.liveStream)return;
-    NSTimeInterval seconds=CMTimeGetSeconds(self.player.currentTime);
-    if(!isfinite(seconds)||seconds<0)return;
-    NSMutableDictionary *saved=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"bl_playback_positions"] mutableCopy]?:[NSMutableDictionary dictionary];
-    if(saved.count>100){
-        NSArray *keys=[saved allKeys];
-        NSUInteger removeCount=MIN((NSUInteger)20,keys.count);
-        for(NSString *key in [keys subarrayWithRange:NSMakeRange(0,removeCount)]) [saved removeObjectForKey:key];
-    }
-    NSTimeInterval duration=[self durationSeconds];
-    if(duration>0 && seconds>duration-12)[saved removeObjectForKey:self.videoKey];
-    else saved[self.videoKey]=@(seconds);
-    [[NSUserDefaults standardUserDefaults] setObject:saved forKey:@"bl_playback_positions"];
+- (void)storePosition {
+    if(!self.videoKey.length||self.liveStream)return;
+    NSTimeInterval t=CMTimeGetSeconds(self.player.currentTime),d=[self duration];
+    if(!isfinite(t)||t<1)return;
+    NSMutableDictionary *all=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"bl_playback_positions"] mutableCopy]?:[NSMutableDictionary dictionary];
+    if(d>0 && t>=d-8)[all removeObjectForKey:self.videoKey];
+    else all[self.videoKey]=@(t);
+    [[NSUserDefaults standardUserDefaults] setObject:all forKey:@"bl_playback_positions"];
 }
 - (void)viewWillDisappear:(BOOL)animated {
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hideControls) object:nil];
-    if(!self.completedPlayback)[self savePosition];
-    [self.player pause];
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(concealControls) object:nil];
+    if(!self.sharedPlayer){[self storePosition];[self.player pause];}
     [super viewWillDisappear:animated];
 }
 - (void)dealloc {
-    [self.saveTimer invalidate];
     [self.uiTimer invalidate];
-    if(self.observingStatus && self.playerItem)
-        [self.playerItem removeObserver:self forKeyPath:@"status" context:BLPlayerItemStatusContext];
+    if(self.observingStatus)[self.playerItem removeObserver:self forKeyPath:@"status" context:BLPlayerItemStatusContext];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
+@end
+
+// Lightweight inline player anchored above the video description.
+@interface BLInlinePlayer : UIView
+@property(nonatomic,strong) AVPlayer *player;
+@property(nonatomic,strong) AVPlayerItem *item;
+@property(nonatomic,strong) BLPlayerSurface *surface;
+@property(nonatomic,strong) UIImageView *poster;
+@property(nonatomic,strong) UIButton *toggleButton;
+@property(nonatomic,strong) UIButton *fullscreenButton;
+@property(nonatomic,strong) UISlider *slider;
+@property(nonatomic,strong) UILabel *statusLabel;
+@property(nonatomic,strong) UILabel *timeLabel;
+@property(nonatomic,strong) UIView *bottom;
+@property(nonatomic,strong) NSTimer *timer;
+@property(nonatomic,copy) void (^fullScreenAction)(void);
+@property(nonatomic,copy) void (^retryAction)(void);
+@property(nonatomic,assign) BOOL observing;
+@property(nonatomic,assign) BOOL finished;
+@property(nonatomic,assign) BOOL dragging;
+@property(nonatomic,assign) BOOL expanded;
+@property(nonatomic,assign) BOOL holding;
+@property(nonatomic,assign) BOOL wasPlaying;
+@property(nonatomic,assign) float speed;
+@property(nonatomic,assign) NSTimeInterval resumeAt;
+@end
+@implementation BLInlinePlayer
+- (instancetype)initWithFrame:(CGRect)frame {
+    if((self=[super initWithFrame:frame])){
+        self.backgroundColor=[UIColor blackColor];
+        self.speed=1;
+        self.clipsToBounds=YES;
+        self.surface=[[BLPlayerSurface alloc] initWithFrame:self.bounds];
+        self.surface.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+        ((AVPlayerLayer *)self.surface.layer).videoGravity=AVLayerVideoGravityResizeAspect;
+        [self addSubview:self.surface];
+        UITapGestureRecognizer *tap=[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapped:)];
+        tap.cancelsTouchesInView=NO;
+        [self.surface addGestureRecognizer:tap];
+        UILongPressGestureRecognizer *hold=[[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(held:)];
+        hold.minimumPressDuration=.42;hold.cancelsTouchesInView=NO;
+        [self.surface addGestureRecognizer:hold];
+        self.poster=[[UIImageView alloc] initWithFrame:self.bounds];
+        self.poster.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+        self.poster.contentMode=UIViewContentModeScaleAspectFill;
+        self.poster.backgroundColor=[UIColor colorWithWhite:.1 alpha:1];
+        self.poster.clipsToBounds=YES;[self addSubview:self.poster];
+        self.toggleButton=[UIButton buttonWithType:UIButtonTypeCustom];
+        self.toggleButton.frame=CGRectZero;
+        self.toggleButton.backgroundColor=[UIColor colorWithWhite:0 alpha:.57];
+        self.toggleButton.layer.cornerRadius=23;
+        self.toggleButton.titleLabel.font=[UIFont systemFontOfSize:23];
+        [self.toggleButton setTitle:@"▶" forState:UIControlStateNormal];
+        [self.toggleButton addTarget:self action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:self.toggleButton];
+        self.bottom=[[UIView alloc] initWithFrame:CGRectZero];
+        self.bottom.backgroundColor=[UIColor colorWithWhite:0 alpha:.64];[self addSubview:self.bottom];
+        self.timeLabel=[[UILabel alloc] initWithFrame:CGRectZero];
+        self.timeLabel.textColor=[UIColor whiteColor];self.timeLabel.font=[UIFont systemFontOfSize:10];
+        self.timeLabel.text=@"00:00";[self.bottom addSubview:self.timeLabel];
+        self.slider=[[UISlider alloc] initWithFrame:CGRectZero];
+        self.slider.minimumTrackTintColor=BLPink();
+        self.slider.maximumTrackTintColor=[UIColor colorWithWhite:1 alpha:.30];
+        [self.slider addTarget:self action:@selector(seekDown) forControlEvents:UIControlEventTouchDown];
+        [self.slider addTarget:self action:@selector(seekMove) forControlEvents:UIControlEventValueChanged];
+        [self.slider addTarget:self action:@selector(seekUp) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchCancel];
+        [self.bottom addSubview:self.slider];
+        self.fullscreenButton=[UIButton buttonWithType:UIButtonTypeCustom];
+        [self.fullscreenButton setTitle:@"⛶" forState:UIControlStateNormal];
+        self.fullscreenButton.titleLabel.font=[UIFont boldSystemFontOfSize:23];
+        [self.fullscreenButton addTarget:self action:@selector(fullscreen) forControlEvents:UIControlEventTouchUpInside];
+        [self.bottom addSubview:self.fullscreenButton];
+        self.statusLabel=[[UILabel alloc] initWithFrame:CGRectZero];
+        self.statusLabel.font=[UIFont systemFontOfSize:12];
+        self.statusLabel.textColor=[UIColor whiteColor];self.statusLabel.textAlignment=NSTextAlignmentCenter;
+        self.statusLabel.numberOfLines=2;
+        self.statusLabel.text=@"正在获取播放地址…";[self addSubview:self.statusLabel];
+        self.timer=[NSTimer scheduledTimerWithTimeInterval:.5 target:self selector:@selector(tick) userInfo:nil repeats:YES];
+        [self layoutControls];
+    }return self;
+}
+- (void)layoutSubviews {[super layoutSubviews];[self layoutControls];}
+- (void)layoutControls {
+    CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
+    self.toggleButton.frame=CGRectMake((w-46)/2,(h-46)/2-7,46,46);
+    self.bottom.frame=CGRectMake(0,MAX(0,h-37),w,37);
+    self.timeLabel.frame=CGRectMake(8,6,46,27);
+    self.slider.frame=CGRectMake(52,5,MAX(35,w-103),29);
+    self.fullscreenButton.frame=CGRectMake(w-46,1,42,34);
+    self.statusLabel.frame=CGRectMake(16,MAX(25,(h-46)/2+49),MAX(40,w-32),27);
+}
+- (void)attachPlayerToSurface:(BOOL)attach {
+    ((AVPlayerLayer *)self.surface.layer).player=attach?self.player:nil;
+}
+- (void)showLoading:(NSString *)message {
+    self.statusLabel.text=message;
+    self.toggleButton.hidden=YES;
+    self.poster.hidden=NO;
+}
+- (void)playURL:(NSURL *)url position:(NSTimeInterval)resume {
+    [self stop];
+    if(!url){[self showLoading:@"无法获取播放地址，轻点重试"];self.toggleButton.hidden=NO;return;}
+    self.finished=NO;self.resumeAt=resume;
+    self.item=[AVPlayerItem playerItemWithURL:url];
+    self.player=[AVPlayer playerWithPlayerItem:self.item];
+    [self attachPlayerToSurface:YES];
+    [self showLoading:@"正在缓冲…"];
+    [self.item addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionInitial context:BLPlayerItemStatusContext];
+    self.observing=YES;
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(itemEnded:) name:AVPlayerItemDidPlayToEndTimeNotification object:self.item];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(itemFailed:) name:AVPlayerItemFailedToPlayToEndTimeNotification object:self.item];
+}
+- (void)stop {
+    [self.player pause];
+    if(self.observing){[self.item removeObserver:self forKeyPath:@"status" context:BLPlayerItemStatusContext];self.observing=NO;}
+    if(self.item)[[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:self.item];
+    if(self.item)[[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemFailedToPlayToEndTimeNotification object:self.item];
+    [self attachPlayerToSurface:NO];
+    self.item=nil;self.player=nil;
+}
+- (void)observeValueForKeyPath:(NSString *)path ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
+    if(context!=BLPlayerItemStatusContext){[super observeValueForKeyPath:path ofObject:object change:change context:context];return;}
+    AVPlayerItem *item=(AVPlayerItem *)object;
+    if(item!=self.item)return;
+    dispatch_async(dispatch_get_main_queue(),^{
+        if(item!=self.item)return;
+        if(item.status==AVPlayerItemStatusReadyToPlay){
+            self.poster.hidden=YES;
+            self.toggleButton.hidden=NO;
+            self.statusLabel.text=@"";
+            NSTimeInterval duration=CMTimeGetSeconds(item.duration);
+            if(isfinite(duration)&&self.resumeAt>5&&self.resumeAt<duration-8)
+                [self.player seekToTime:CMTimeMakeWithSeconds(self.resumeAt,600)];
+            [self.player play];self.player.rate=self.speed;
+            [self tick];
+        }else if(item.status==AVPlayerItemStatusFailed){
+            self.toggleButton.hidden=NO;
+            self.statusLabel.text=@"播放失败，轻点重试";
+            self.poster.hidden=NO;
+        }
+    });
+}
+- (void)itemEnded:(NSNotification *)note {
+    self.finished=YES;
+    [self.player pause];
+    self.statusLabel.text=@"播放结束";
+    self.toggleButton.hidden=NO;[self.toggleButton setTitle:@"↻" forState:UIControlStateNormal];
+    [self tick];
+}
+- (void)itemFailed:(NSNotification *)note {
+    self.statusLabel.text=@"播放中断，请重试";
+    self.toggleButton.hidden=NO;
+}
+- (BOOL)playing {return self.player.rate>.01f;}
+- (void)toggle {
+    if(!self.player || self.item.status==AVPlayerItemStatusFailed){
+        if(self.retryAction)self.retryAction();
+        return;
+    }
+    if([self playing])[self.player pause];
+    else {
+        if(self.finished){
+            self.finished=NO;
+            [self.player seekToTime:kCMTimeZero];
+        }
+        [self.player play];self.player.rate=self.speed;
+    }
+    [self tick];
+}
+- (void)tapped:(UITapGestureRecognizer *)tap {
+    if(tap.state!=UIGestureRecognizerStateEnded)return;
+    self.expanded=!self.expanded;
+    [self tick];
+}
+- (void)held:(UILongPressGestureRecognizer *)g {
+    if(!self.player)return;
+    if(g.state==UIGestureRecognizerStateBegan){
+        self.wasPlaying=[self playing];self.holding=YES;
+        if(self.wasPlaying)self.player.rate=2;
+    }else if(g.state==UIGestureRecognizerStateEnded||g.state==UIGestureRecognizerStateCancelled){
+        self.holding=NO;if(self.wasPlaying)self.player.rate=self.speed;
+    }
+}
+- (void)fullscreen {if(self.fullScreenAction)self.fullScreenAction();}
+- (NSTimeInterval)duration {
+    NSTimeInterval d=CMTimeGetSeconds(self.item.duration);
+    return isfinite(d)&&d>0?d:0;
+}
+- (NSString *)clock:(NSTimeInterval)seconds {
+    NSInteger n=(NSInteger)MAX(0,seconds);
+    return [NSString stringWithFormat:@"%02ld:%02ld",(long)n/60,(long)n%60];
+}
+- (void)tick {
+    BOOL play=[self playing];
+    [self.toggleButton setTitle:play?@"Ⅱ":@"▶" forState:UIControlStateNormal];
+    self.toggleButton.alpha=play && !self.expanded?.0:1;
+    self.toggleButton.userInteractionEnabled=!play||self.expanded;
+    self.bottom.alpha=(play && !self.expanded)?0:1;
+    self.bottom.userInteractionEnabled=!play||self.expanded;
+    NSTimeInterval t=CMTimeGetSeconds(self.player.currentTime),d=[self duration];
+    if(!isfinite(t)||t<0)t=0;
+    if(!self.dragging){self.slider.value=d>0?(float)MIN(1,t/d):0;self.timeLabel.text=[self clock:t];}
+    if(self.finished)[self.toggleButton setTitle:@"↻" forState:UIControlStateNormal];
+}
+- (void)seekDown {self.dragging=YES;}
+- (void)seekMove {self.timeLabel.text=[self clock:[self duration]*self.slider.value];}
+- (void)seekUp {
+    self.dragging=NO;
+    NSTimeInterval d=[self duration];
+    if(d>0)[self.player seekToTime:CMTimeMakeWithSeconds(d*self.slider.value,600)];
+    self.expanded=YES;[self tick];
+}
+- (void)dealloc {[self.timer invalidate];[self stop];}
 @end
 
 @interface BLCommentsController : UITableViewController
