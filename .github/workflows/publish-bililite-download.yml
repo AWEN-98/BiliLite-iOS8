@@ -26,6 +26,9 @@ jobs:
             if [ -n "$RUN_ID" ]; then break; fi
             sleep 10
           done
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID="$(gh run list --workflow "Build Bili Lite iOS 8" --branch main --json databaseId,status,conclusion --limit 20 | python3 -c 'import json,sys; runs=json.load(sys.stdin); print(next((str(r["databaseId"]) for r in runs if r["status"]=="completed" and r["conclusion"]=="success"), ""))')"
+          fi
           test -n "$RUN_ID"
           gh run download "$RUN_ID" -R AWEN-98/BiliLite-iOS8 -n 'BiliLite-iOS8-v0.8.0-DEB-IPA' -D /tmp/verified
           DEB="$(find /tmp/verified -maxdepth 2 -name '*.deb' -print -quit)"
