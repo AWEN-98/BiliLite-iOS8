@@ -1410,6 +1410,8 @@ static NSString *BLHLS(NSDictionary *json){
     return nil;
 }
 
+static UIImage *BLLineIcon(NSInteger type, UIColor *color);
+
 @interface BLRoomDetailController : UIViewController
 @property(nonatomic,strong) NSDictionary *room;
 @property(nonatomic,strong) UIImageView *cover;
