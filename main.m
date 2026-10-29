@@ -1267,6 +1267,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     self.player.videoKey=[NSString stringWithFormat:@"%@:%@",BLString(self.video[@"bvid"]),self.activeCID?:@""];
     self.player.qualityLabel=self.quality==16?@"360P":(self.quality==32?@"480P":@"720P");
     self.player.speed=self.inlinePlayer.speed;
+    __unsafe_unretained BLDetailController *owner=self;
     self.player.healthAction=^(BOOL stalled){[owner checkAdaptiveQuality:stalled];};
     self.presentingFullscreen=YES;
     [self.inlinePlayer attachPlayerToSurface:NO];
@@ -1484,7 +1485,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     [self.inlinePlayer.player pause];
     self.autoChanging=YES;
     [self.inlinePlayer showLoading:@"正在获取播放地址…"];
-    [self requestPlayURLForBVID:bvid cid:cid quality:self.quality allowFallback:YES completion:^(NSString *stream, NSDictionary *json, NSError *error){
+    [self requestPlayURLForBVID:bvid cid:cid quality:self.quality allowFallback:self.autoQuality completion:^(NSString *stream, NSDictionary *json, NSError *error){
         if(serial!=self.requestSerial)return;
         self.autoChanging=NO;
         if(![stream hasPrefix:@"http://"] && ![stream hasPrefix:@"https://"]){
