@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <SystemConfiguration/SystemConfiguration.h>
 #import <math.h>
 #import <CommonCrypto/CommonDigest.h>
 #include <string.h>
@@ -8,6 +9,44 @@
 #import <CoreImage/CoreImage.h>
 
 static UIImage *BLLineIcon(NSInteger type, UIColor *color);
+
+static NSTimeInterval BLNow(void){return [NSDate timeIntervalSinceReferenceDate];}
+static NSInteger BLQualityForNetwork(void){
+    double bps=[[NSUserDefaults standardUserDefaults] doubleForKey:@"bl_auto_bandwidth_bps_v1"];
+    SCNetworkReachabilityRef reach=SCNetworkReachabilityCreateWithName(NULL,"api.bilibili.com");
+    SCNetworkReachabilityFlags flags=0;
+    BOOL reachable=reach && SCNetworkReachabilityGetFlags(reach,&flags);
+    if(reach)CFRelease(reach);
+    BOOL connected=reachable && (flags&kSCNetworkReachabilityFlagsReachable) && !(flags&kSCNetworkReachabilityFlagsConnectionRequired);
+    BOOL cellular=connected && (flags&kSCNetworkReachabilityFlagsIsWWAN);
+    if(!connected && reachable)return 16;
+    if(bps>0){
+        if(bps<1300000)return 16;
+        if(bps<3400000)return 32;
+        if(cellular && bps<4500000)return 32;
+        return 64;
+    }
+    return cellular?32:64;
+}
+static NSString *BLQualityName(NSInteger q){
+    return q>=64?@"720P":q>=32?@"480P":@"360P";
+}
+static NSTimeInterval BLBufferedAhead(AVPlayerItem *item, NSTimeInterval current){
+    NSTimeInterval ahead=0;
+    for(NSValue *value in item.loadedTimeRanges){
+        CMTimeRange range=[value CMTimeRangeValue];
+        double start=CMTimeGetSeconds(range.start),duration=CMTimeGetSeconds(range.duration);
+        if(isfinite(start)&&isfinite(duration)&&start<=current+0.4 && start+duration>=current)
+            ahead=MAX(ahead,start+duration-current);
+    }
+    return ahead;
+}
+static double BLObservedBitrate(AVPlayerItem *item){
+    AVPlayerItemAccessLogEvent *event=[[item.accessLog events] lastObject];
+    double result=event?event.observedBitrate:0;
+    return isfinite(result)&&result>250000&&result<150000000?result:0;
+}
+
 static UIColor *BLPink(void){return [UIColor colorWithRed:.93 green:.27 blue:.47 alpha:1];}
 static UIColor *BLBg(void){return [UIColor colorWithRed:.965 green:.972 blue:.985 alpha:1];}
 static UIColor *BLInk(void){return [UIColor colorWithRed:.15 green:.19 blue:.28 alpha:1];}
@@ -454,6 +493,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 @property(nonatomic,strong) UILabel *speedHint;
 @property(nonatomic,assign) CGFloat gestureStart;
 @property(nonatomic,assign) BOOL brightnessGesture;
+@property(nonatomic,copy) void (^healthAction)(BOOL stalled);
 @end
 
 @implementation BLPlayerController
@@ -579,7 +619,9 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
         self.observingStatus=YES;
     }
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playbackEnded:)
-        name:AVPlayerItemDidPlayToEndTimeNotification object:self.playerItem];
+        name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playbackStalled:)
+        name:AVPlayerItemPlaybackStalledNotification object:nil];
     self.uiTimer=[NSTimer scheduledTimerWithTimeInterval:.5 target:self selector:@selector(tick) userInfo:nil repeats:YES];
     [self tick];
     if(self.sharedPlayer && self.player.rate>0)[self scheduleHide];
@@ -656,6 +698,8 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     if(!playing){self.playButton.alpha=1;self.playButton.userInteractionEnabled=YES;}
     else {self.playButton.alpha=self.controlsVisible?1:0;self.playButton.userInteractionEnabled=self.controlsVisible;}
     if(self.liveStream)return;
+    if(self.sharedPlayer)self.playerItem=self.player.currentItem;
+    if(self.healthAction)self.healthAction(NO);
     NSTimeInterval d=[self duration],t=CMTimeGetSeconds(self.player.currentTime);
     if(!isfinite(t)||t<0)t=0;
     if(!self.dragging){self.slider.value=d>0?(float)MIN(1,t/d):0;self.positionText.text=[NSString stringWithFormat:@"%@ / %@",[self formatted:t],[self formatted:d]];}
@@ -740,7 +784,11 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
         [self.player pause];[self revealControls];
     }
 }
+- (void)playbackStalled:(NSNotification *)note {
+    if(note.object==self.player.currentItem && !self.liveStream && self.healthAction)self.healthAction(YES);
+}
 - (void)playbackEnded:(NSNotification *)note {
+    if(note.object!=self.player.currentItem)return;
     self.statusText.text=@"播放完毕";
     [self.player pause];
     if(self.videoKey.length){
@@ -794,6 +842,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 @property(nonatomic,assign) BOOL wasPlaying;
 @property(nonatomic,assign) float speed;
 @property(nonatomic,assign) NSTimeInterval resumeAt;
+@property(nonatomic,copy) void (^healthAction)(BOOL stalled);
 @end
 @implementation BLInlinePlayer
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -870,23 +919,30 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     self.poster.hidden=NO;
 }
 - (void)playURL:(NSURL *)url position:(NSTimeInterval)resume {
+    AVPlayer *existing=self.player;
+    BOOL attached=!existing || ((AVPlayerLayer *)self.surface.layer).player==existing;
     [self stop];
     if(!url){[self showLoading:@"无法获取播放地址，轻点重试"];self.toggleButton.hidden=NO;return;}
     self.finished=NO;self.resumeAt=resume;
     self.item=[AVPlayerItem playerItemWithURL:url];
-    self.player=[AVPlayer playerWithPlayerItem:self.item];
-    [self attachPlayerToSurface:YES];
+    if(existing){
+        self.player=existing;
+        [self.player replaceCurrentItemWithPlayerItem:self.item];
+    }else self.player=[AVPlayer playerWithPlayerItem:self.item];
+    [self attachPlayerToSurface:attached];
     [self showLoading:@"正在缓冲…"];
     [self.item addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionInitial context:BLPlayerItemStatusContext];
     self.observing=YES;
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(itemEnded:) name:AVPlayerItemDidPlayToEndTimeNotification object:self.item];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(itemFailed:) name:AVPlayerItemFailedToPlayToEndTimeNotification object:self.item];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(itemStalled:) name:AVPlayerItemPlaybackStalledNotification object:self.item];
 }
 - (void)stop {
     [self.player pause];
     if(self.observing){[self.item removeObserver:self forKeyPath:@"status" context:BLPlayerItemStatusContext];self.observing=NO;}
     if(self.item)[[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:self.item];
     if(self.item)[[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemFailedToPlayToEndTimeNotification object:self.item];
+    if(self.item)[[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemPlaybackStalledNotification object:self.item];
     [self attachPlayerToSurface:NO];
     self.item=nil;self.player=nil;
 }
@@ -918,6 +974,9 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     self.statusLabel.text=@"播放结束";
     self.toggleButton.hidden=NO;[self.toggleButton setImage:BLLineIcon(9,[UIColor whiteColor]) forState:UIControlStateNormal];
     [self tick];
+}
+- (void)itemStalled:(NSNotification *)note {
+    if(note.object==self.item && self.healthAction)self.healthAction(YES);
 }
 - (void)itemFailed:(NSNotification *)note {
     self.statusLabel.text=@"播放中断，请重试";
@@ -964,6 +1023,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 }
 - (void)tick {
     BOOL play=[self playing];
+    if(self.healthAction)self.healthAction(NO);
     self.statusLabel.hidden=self.statusLabel.text.length==0;
     [self.toggleButton setImage:BLLineIcon(play?8:7,[UIColor whiteColor]) forState:UIControlStateNormal];
     self.toggleButton.alpha=(play && !self.expanded)?0:1;
@@ -1069,11 +1129,20 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 @property(nonatomic,assign) BOOL hasRequestedVideo;
 @property(nonatomic,assign) BOOL presentingFullscreen;
 @property(nonatomic,assign) BOOL wasPlayingBeforeLeave;
+@property(nonatomic,assign) BOOL autoQuality;
+@property(nonatomic,assign) BOOL autoChanging;
+@property(nonatomic,assign) NSTimeInterval lastAutoCheck;
+@property(nonatomic,assign) NSTimeInterval lastAutoChange;
+@property(nonatomic,assign) NSTimeInterval lastHealthyAt;
+@property(nonatomic,assign) NSTimeInterval stableSince;
+@property(nonatomic,assign) NSTimeInterval previousPlaybackTime;
+@property(nonatomic,assign) NSInteger stallEvents;
+@property(nonatomic,assign) NSInteger goodChecks;
 @end
 @implementation BLDetailController
 - (instancetype)initWithVideo:(NSDictionary *)video {
     if((self=[super init])){
-        self.video=video?:@{};self.related=@[];self.parts=@[];self.quality=64;
+        self.video=video?:@{};self.related=@[];self.parts=@[];self.autoQuality=YES;self.quality=BLQualityForNetwork();self.lastAutoChange=BLNow();
         self.selectedCID=BLString(video[@"cid"]);
         self.imageCache=[NSCache new];self.imageCache.countLimit=12;
     }
@@ -1103,6 +1172,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     __unsafe_unretained BLDetailController *owner=self;
     self.inlinePlayer.fullScreenAction=^{[owner showFullscreen];};
     self.inlinePlayer.retryAction=^{[owner playTapped];};
+    self.inlinePlayer.healthAction=^(BOOL stalled){[owner checkAdaptiveQuality:stalled];};
     [self.view addSubview:self.inlinePlayer];
     self.cover=self.inlinePlayer.poster;
     self.scroll=[[UIScrollView alloc] initWithFrame:CGRectMake(0,videoHeight,w,MAX(1,h-videoHeight))];
@@ -1130,7 +1200,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     [self.scroll addSubview:self.descriptionBox];
 
     self.partButton=[self button:@"P1 选集" x:12 y:255 w:143 action:@selector(choosePart)];
-    self.qualityButton=[self button:@"720P 优先" x:165 y:255 w:w-177 action:@selector(chooseQuality)];
+    self.qualityButton=[self button:@"自动画质" x:165 y:255 w:w-177 action:@selector(chooseQuality)];
 
     UILabel *relatedLabel=[[UILabel alloc] initWithFrame:CGRectMake(13,305,w-26,29)];
     relatedLabel.text=@"相关推荐";relatedLabel.font=[UIFont boldSystemFontOfSize:15];
@@ -1197,6 +1267,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     self.player.videoKey=[NSString stringWithFormat:@"%@:%@",BLString(self.video[@"bvid"]),self.activeCID?:@""];
     self.player.qualityLabel=self.quality==16?@"360P":(self.quality==32?@"480P":@"720P");
     self.player.speed=self.inlinePlayer.speed;
+    self.player.healthAction=^(BOOL stalled){[owner checkAdaptiveQuality:stalled];};
     self.presentingFullscreen=YES;
     [self.inlinePlayer attachPlayerToSurface:NO];
     [self presentViewController:self.player animated:YES completion:nil];
@@ -1286,21 +1357,82 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     }]];
     [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
 }
+- (void)updateQualityTitle {
+    NSString *label=BLQualityName(self.quality);
+    NSString *title=self.autoQuality?[NSString stringWithFormat:@"自动 %@",label]:[label stringByAppendingString:@" 固定"];
+    [self.qualityButton setTitle:title forState:UIControlStateNormal];
+    if(self.player)self.player.qualityLabel=title;
+}
 - (void)chooseQuality {
-    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"播放清晰度" message:@"会优先请求兼容 iPhone 4S 的单文件 MP4。高清选项可能需要登录。" preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"播放清晰度"
+        message:@"自动模式会综合网络吞吐量、缓冲状态与 iPhone 4S 的解码能力，在 360P、480P、720P 之间调整。"
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    [menu addAction:[UIAlertAction actionWithTitle:self.autoQuality?@"自动（当前）":@"自动（推荐）"
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            BOOL changed=!self.autoQuality;
+            self.autoQuality=YES;
+            NSInteger desired=BLQualityForNetwork();
+            self.stallEvents=0;self.goodChecks=0;self.stableSince=0;
+            if(desired!=self.quality){self.quality=desired;self.lastAutoChange=BLNow();[self playTapped];}
+            else if(changed)[self updateQualityTitle];
+        }]];
     for(NSNumber *value in @[@16,@32,@64]){
-        NSString *name=[value integerValue]==16?@"360P（最稳定）":[value integerValue]==32?@"480P":@"720P";
-        [menu addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
-            NSInteger nextQuality=[value integerValue];
-            if(nextQuality==self.quality)return;
-            [self saveActivePosition];
-            self.quality=nextQuality;
-            [self.qualityButton setTitle:[NSString stringWithFormat:@"%@ 画质",name] forState:UIControlStateNormal];
-            [self playTapped];
+        NSInteger q=[value integerValue];
+        NSString *title=[NSString stringWithFormat:@"%@%@",BLQualityName(q),(!self.autoQuality&&q==self.quality)?@"（当前）":@""];
+        [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            BOOL changed=self.autoQuality || self.quality!=q;
+            self.autoQuality=NO;self.quality=q;
+            self.stallEvents=0;self.goodChecks=0;self.stableSince=0;
+            if(changed)[self playTapped];
+            else [self updateQualityTitle];
         }]];
     }
     [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:menu animated:YES completion:nil];
+}
+- (void)checkAdaptiveQuality:(BOOL)stalled {
+    if(!self.autoQuality || self.autoChanging || !self.inlinePlayer.player || !self.activeCID.length)return;
+    NSTimeInterval now=BLNow();
+    if(stalled)self.stallEvents++;
+    if(!stalled && now-self.lastAutoCheck<3.0)return;
+    self.lastAutoCheck=now;
+    AVPlayer *playing=self.inlinePlayer.player;
+    AVPlayerItem *item=playing.currentItem;
+    if(!item || item.status!=AVPlayerItemStatusReadyToPlay)return;
+    double observed=BLObservedBitrate(item);
+    if(observed>0){
+        double previous=[[NSUserDefaults standardUserDefaults] doubleForKey:@"bl_auto_bandwidth_bps_v1"];
+        double sample=MIN(12000000,observed);
+        double next=previous>0?previous*.75+sample*.25:sample;
+        [[NSUserDefaults standardUserDefaults] setDouble:next forKey:@"bl_auto_bandwidth_bps_v1"];
+    }
+    double position=CMTimeGetSeconds(playing.currentTime);
+    if(!isfinite(position)||position<0)position=0;
+    double ahead=BLBufferedAhead(item,position);
+    BOOL advancing=position>self.previousPlaybackTime+.5;
+    self.previousPlaybackTime=position;
+    if(stalled || (self.stallEvents>0 && ahead<2.0)){
+        self.stableSince=0;self.goodChecks=0;
+        if(self.quality>16 && now-self.lastAutoChange>12.0){
+            self.quality=self.quality>=64?32:16;
+            self.lastAutoChange=now;self.stallEvents=0;
+            [self updateQualityTitle];[self playTapped];
+        }
+        return;
+    }
+    if(!advancing || playing.rate<.01 || ahead<9){
+        self.goodChecks=0;self.stableSince=0;
+        return;
+    }
+    if(!self.stableSince)self.stableSince=now;
+    self.goodChecks++;
+    if(self.quality>=64 || now-self.lastAutoChange<35 || now-self.stableSince<22 || self.goodChecks<7)return;
+    double bandwidth=observed>0?observed:[[NSUserDefaults standardUserDefaults] doubleForKey:@"bl_auto_bandwidth_bps_v1"];
+    NSInteger target=self.quality==16?32:64;
+    double required=target==64?3600000:1500000;
+    if(bandwidth<required || ahead<16)return;
+    self.quality=target;self.lastAutoChange=now;self.goodChecks=0;self.stableSince=0;
+    [self updateQualityTitle];[self playTapped];
 }
 - (void)openComments {
     NSString *aid=BLString(self.video[@"aid"]);
@@ -1350,9 +1482,11 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
         resume=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"bl_playback_positions"][key] doubleValue];
     }
     [self.inlinePlayer.player pause];
+    self.autoChanging=YES;
     [self.inlinePlayer showLoading:@"正在获取播放地址…"];
     [self requestPlayURLForBVID:bvid cid:cid quality:self.quality allowFallback:YES completion:^(NSString *stream, NSDictionary *json, NSError *error){
         if(serial!=self.requestSerial)return;
+        self.autoChanging=NO;
         if(![stream hasPrefix:@"http://"] && ![stream hasPrefix:@"https://"]){
             [self.inlinePlayer showLoading:[NSString stringWithFormat:@"暂时无法播放：%@。轻点重试",BLFailure(json,error)]];
             self.inlinePlayer.toggleButton.hidden=NO;
@@ -1363,8 +1497,10 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
         if(available>=16){
             self.quality=available;
             NSString *label=available>=80?@"1080P":(available>=64?@"720P":(available>=32?@"480P":@"360P"));
-            [self.qualityButton setTitle:[label stringByAppendingString:@" 画质"] forState:UIControlStateNormal];
+            [self updateQualityTitle];
         }
+        self.stallEvents=0;self.goodChecks=0;self.stableSince=0;
+        self.previousPlaybackTime=0;
         BLStore(@"bl_history_v1",self.video,NO);
         [self.inlinePlayer playURL:[NSURL URLWithString:stream] position:resume];
     }];
