@@ -1522,10 +1522,7 @@ static NSString *BLHLS(NSDictionary *json){
 @property(nonatomic,strong) NSArray *rooms;
 @property(nonatomic,strong) NSCache *imageCache;
 @property(nonatomic,assign) BOOL showFavorites;
-@property(nonatomic,strong) UIView *bottomNav;
-@property(nonatomic,strong) NSMutableArray *tabButtons;
-@property(nonatomic,assign) CGFloat lastScrollY;
-@property(nonatomic,assign) BOOL navHidden;
+@property(nonatomic,strong) UISegmentedControl *segments;
 @end
 @implementation BLLiveListController
 - (void)viewDidLoad {
@@ -2113,7 +2110,10 @@ static UIImage *BLLineIcon(NSInteger type, UIColor *color) {
 
 @interface BLListController : UITableViewController <UISearchBarDelegate,UITextFieldDelegate>
 @property(nonatomic,strong) UISearchBar *search;
-@property(nonatomic,strong) UISegmentedControl *segments;
+@property(nonatomic,strong) UIView *bottomNav;
+@property(nonatomic,strong) NSMutableArray *tabButtons;
+@property(nonatomic,assign) CGFloat lastScrollY;
+@property(nonatomic,assign) BOOL navHidden;
 @property(nonatomic,strong) UILabel *feedNotice;
 @property(nonatomic,strong) UIButton *moreButton;
 @property(nonatomic,strong) NSCache *imageCache;
