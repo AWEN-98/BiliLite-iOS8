@@ -42,7 +42,10 @@ contains("BLLineIcon(12", "fullscreen control")
 contains("self.fullscreenPlayer.liveAutomatic=self.qualityAuto;", "live auto state transfer")
 contains("self.player.volume=value", "right-side volume gesture")
 contains("[UIScreen mainScreen].brightness=value", "left-side brightness gesture")
-assert "__unsafe_unretained BLDetailController" not in source
+# The legacy ARMv7 compiler cannot link weak exception unwind symbols.
+# Non-retaining callbacks must be explicitly cleared before deallocation.
+contains("self.inlinePlayer.healthAction=nil;", "clear non-retaining inline callback")
+contains("self.player.healthAction=nil;", "clear non-retaining fullscreen callback")
 for symbol in ("▶", "↻", "★", "☆", "●", "Ⅱ", "🚀", "📺"):
     assert symbol not in source, f"Glyph icon returned: {symbol}"
 print("Source audit passed: package, iOS 8, ARMv7, icons, images, playback, and portrait/live guards")
