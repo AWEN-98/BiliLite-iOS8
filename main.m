@@ -1220,7 +1220,7 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
     CGFloat videoHeight=roundf(w*9.0f/16.0f);
     self.inlinePlayer=[[BLInlinePlayer alloc] initWithFrame:CGRectMake(0,0,w,videoHeight)];
     self.inlinePlayer.autoresizingMask=UIViewAutoresizingFlexibleWidth;
-    __weak BLDetailController *owner=self;
+    __unsafe_unretained BLDetailController *owner=self;
     self.inlinePlayer.fullScreenAction=^{[owner showFullscreen];};
     self.inlinePlayer.retryAction=^{[owner playTapped];};
     self.inlinePlayer.healthAction=^(BOOL stalled){[owner checkAdaptiveQuality:stalled];};
@@ -1300,6 +1300,12 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
     [super viewWillDisappear:animated];
 }
 - (void)dealloc {
+    // The legacy armv7 toolchain cannot link ARC weak exception helpers.
+    // Drop callback references before the owner and player are destroyed.
+    self.inlinePlayer.fullScreenAction=nil;
+    self.inlinePlayer.retryAction=nil;
+    self.inlinePlayer.healthAction=nil;
+    self.player.healthAction=nil;
     [self.inlinePlayer stop];
 }
 - (void)saveActivePosition {
@@ -1320,7 +1326,7 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
     self.player.videoKey=[NSString stringWithFormat:@"%@:%@",BLString(self.video[@"bvid"]),self.activeCID?:@""];
     self.player.qualityLabel=self.quality==16?@"360P":(self.quality==32?@"480P":@"720P");
     self.player.speed=self.inlinePlayer.speed;
-    __weak BLDetailController *owner=self;
+    __unsafe_unretained BLDetailController *owner=self;
     self.player.healthAction=^(BOOL stalled){[owner checkAdaptiveQuality:stalled];};
     self.presentingFullscreen=YES;
     [self.inlinePlayer attachPlayerToSurface:NO];
