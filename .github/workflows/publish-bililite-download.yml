@@ -1,17 +1,21 @@
 name: Publish BiliLite Direct Downloads
 on:
-  push:
-    paths:
-      - '.github/workflows/publish-bililite-download.yml'
+  workflow_run:
+    workflows: ["Build Bili Lite iOS 8"]
+    types: [completed]
   workflow_dispatch:
+
 permissions:
   contents: write
   actions: read
+
 jobs:
   publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_sha == github.sha) }}
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           persist-credentials: true
       - name: Download verified armv7 build
@@ -19,25 +23,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          RUN_ID="${{ github.event.workflow_run.id }}"
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID="$(gh run list -R AWEN-98/BiliLite-iOS8 --workflow build-deb.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          fi
+          test -n "$RUN_ID"
           mkdir -p /tmp/verified
-          gh run download 40861288160 -R AWEN-98/BiliLite-iOS8 -n 'BiliLite-iOS8-v0.9.0-DEB-IPA' -D /tmp/verified
+          gh run download "$RUN_ID" -R AWEN-98/BiliLite-iOS8 -n 'BiliLite-iOS8-v0.9.1-DEB-IPA' -D /tmp/verified
           DEB="$(find /tmp/verified -maxdepth 2 -name '*.deb' -print -quit)"
           test -n "$DEB"
           test "$(dpkg-deb -f "$DEB" Architecture)" = "iphoneos-arm"
-          test "$(dpkg-deb -f "$DEB" Version)" = "0.9.0"
+          test "$(dpkg-deb -f "$DEB" Version)" = "0.9.1"
           ar t "$DEB" | grep -qx data.tar.gz
           mkdir -p downloads
-          cp "$DEB" "downloads/BiliLite-iOS8-v0.9.0.deb"
-          (cd downloads && zip -q -9 "BiliLite-iOS8-v0.9.0.zip" "BiliLite-iOS8-v0.9.0.deb")
-          unzip -t "downloads/BiliLite-iOS8-v0.9.0.zip"
-          sha256sum "downloads/BiliLite-iOS8-v0.9.0.deb" "downloads/BiliLite-iOS8-v0.9.0.zip"
-      - name: Commit binary downloads for direct links
+          cp "$DEB" "downloads/BiliLite-iOS8-v0.9.1.deb"
+          (cd downloads && zip -q -9 "BiliLite-iOS8-v0.9.1.zip" "BiliLite-iOS8-v0.9.1.deb")
+          unzip -t "downloads/BiliLite-iOS8-v0.9.1.zip"
+          sha256sum "downloads/BiliLite-iOS8-v0.9.1.deb" "downloads/BiliLite-iOS8-v0.9.1.zip"
+      - name: Commit direct download artifacts
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add downloads/BiliLite-iOS8-v0.9.0.deb downloads/BiliLite-iOS8-v0.9.0.zip
+          git add downloads/BiliLite-iOS8-v0.9.1.deb downloads/BiliLite-iOS8-v0.9.1.zip
           if ! git diff --cached --quiet; then
-            git commit -m "release: publish verified BiliLite direct download files [skip ci]"
+            git commit -m "release: publish verified 0.9.1 direct downloads [skip ci]"
             git push origin HEAD:main
           fi
