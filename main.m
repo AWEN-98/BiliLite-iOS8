@@ -1665,6 +1665,9 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
 @property(nonatomic,assign) NSTimeInterval lastRecovery;
 @end
 @implementation BLLiveWatchController
+- (BOOL)shouldAutorotate {return NO;}
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {return UIInterfaceOrientationMaskPortrait;}
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {return UIInterfaceOrientationPortrait;}
 - (instancetype)initWithRoom:(NSDictionary *)room stream:(NSString *)stream quality:(NSInteger)quality {
     if((self=[super init])){
         self.room=room?:@{};
@@ -1808,6 +1811,11 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
 }
 - (void)openFullscreen {
     if(!self.player.currentItem)return;
+    if(self.player.currentItem.status!=AVPlayerItemStatusReadyToPlay){
+        self.statusLabel.text=@"直播加载中，请稍后点击全屏";
+        self.statusLabel.hidden=NO;
+        return;
+    }
     self.presentingFullscreen=YES;
     ((AVPlayerLayer *)self.surface.layer).player=nil;
     self.fullscreenPlayer=[[BLPlayerController alloc] initWithExistingPlayer:self.player];
@@ -1830,6 +1838,7 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
     [super viewWillDisappear:animated];
     if(!self.presentingFullscreen){
         self.sourceSerial++;
+        [self.tickTimer invalidate];self.tickTimer=nil;
         [self.player pause];
     }
 }
