@@ -1522,7 +1522,10 @@ static NSString *BLHLS(NSDictionary *json){
 @property(nonatomic,strong) NSArray *rooms;
 @property(nonatomic,strong) NSCache *imageCache;
 @property(nonatomic,assign) BOOL showFavorites;
-@property(nonatomic,strong) UISegmentedControl *segments;
+@property(nonatomic,strong) UIView *bottomNav;
+@property(nonatomic,strong) NSMutableArray *tabButtons;
+@property(nonatomic,assign) CGFloat lastScrollY;
+@property(nonatomic,assign) BOOL navHidden;
 @end
 @implementation BLLiveListController
 - (void)viewDidLoad {
@@ -2075,6 +2078,39 @@ static NSString *BLHLS(NSDictionary *json){
 }
 @end
 
+
+static UIImage *BLLineIcon(NSInteger type, UIColor *color) {
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(24,24),NO,0);
+    CGContextRef c=UIGraphicsGetCurrentContext();CGContextSetStrokeColorWithColor(c,color.CGColor);
+    CGContextSetLineWidth(c,1.7);CGContextSetLineCap(c,kCGLineCapRound);CGContextSetLineJoin(c,kCGLineJoinRound);
+    if(type==0){ // home
+        CGContextMoveToPoint(c,3,11);CGContextAddLineToPoint(c,12,4);CGContextAddLineToPoint(c,21,11);
+        CGContextMoveToPoint(c,5,10);CGContextAddLineToPoint(c,5,21);CGContextAddLineToPoint(c,19,21);CGContextAddLineToPoint(c,19,10);
+        CGContextMoveToPoint(c,10,21);CGContextAddLineToPoint(c,10,15);CGContextAddLineToPoint(c,14,15);CGContextAddLineToPoint(c,14,21);
+    }else if(type==1){ // trending
+        CGContextMoveToPoint(c,3,18);CGContextAddLineToPoint(c,9,12);CGContextAddLineToPoint(c,13,15);CGContextAddLineToPoint(c,21,6);
+        CGContextMoveToPoint(c,15,6);CGContextAddLineToPoint(c,21,6);CGContextAddLineToPoint(c,21,12);
+    }else if(type==2){ // search
+        CGContextAddEllipseInRect(c,CGRectMake(4,4,13,13));
+        CGContextMoveToPoint(c,16,16);CGContextAddLineToPoint(c,21,21);
+    }else if(type==3){ // bookmark
+        CGContextMoveToPoint(c,6,3);CGContextAddLineToPoint(c,18,3);CGContextAddLineToPoint(c,18,21);
+        CGContextAddLineToPoint(c,12,17);CGContextAddLineToPoint(c,6,21);CGContextClosePath(c);
+    }else if(type==4){ // history
+        CGContextAddArc(c,12,12,9,-1.45,4.05,0);
+        CGContextMoveToPoint(c,3,4);CGContextAddLineToPoint(c,3,10);CGContextAddLineToPoint(c,9,10);
+        CGContextMoveToPoint(c,12,7);CGContextAddLineToPoint(c,12,12);CGContextAddLineToPoint(c,16,14);
+    }else if(type==5){ // user
+        CGContextAddEllipseInRect(c,CGRectMake(9,3,6,6));
+        CGContextMoveToPoint(c,4,21);CGContextAddCurveToPoint(c,5,12,19,12,20,21);
+    }else if(type==6){ // live TV
+        CGContextStrokeRect(c,CGRectMake(3,7,18,13));
+        CGContextMoveToPoint(c,9,3);CGContextAddLineToPoint(c,12,6);CGContextAddLineToPoint(c,15,3);
+        CGContextMoveToPoint(c,10,11);CGContextAddLineToPoint(c,15,13.5);CGContextAddLineToPoint(c,10,16);CGContextClosePath(c);
+    }
+    CGContextStrokePath(c);UIImage *image=UIGraphicsGetImageFromCurrentImageContext();UIGraphicsEndImageContext();return image;
+}
+
 @interface BLListController : UITableViewController <UISearchBarDelegate,UITextFieldDelegate>
 @property(nonatomic,strong) UISearchBar *search;
 @property(nonatomic,strong) UISegmentedControl *segments;
@@ -2102,25 +2138,41 @@ static NSString *BLHLS(NSDictionary *json){
     self.items=@[];self.mode=0;self.page=1;self.freshIndex=1;
     self.feedLoggedIn=BLAuthCookie().length>0;
     CGFloat w=self.view.bounds.size.width;
-    UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,121)];
+    UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,26)];
     header.backgroundColor=BLBg();
     self.search=[[UISearchBar alloc] initWithFrame:CGRectMake(0,0,w,51)];
     self.search.placeholder=@"搜索视频 / 粘贴 BV 号";
     self.search.delegate=self;self.search.tintColor=BLPink();
-    [header addSubview:self.search];
-    self.segments=[[UISegmentedControl alloc] initWithItems:@[@"推荐",@"热门",@"搜索",@"收藏",@"历史"]];
-    self.segments.frame=CGRectMake(7,54,w-14,36);
-    self.segments.autoresizingMask=UIViewAutoresizingFlexibleWidth;
-    self.segments.selectedSegmentIndex=0;
-    [self.segments addTarget:self action:@selector(changed:) forControlEvents:UIControlEventValueChanged];
-    [header addSubview:self.segments];
-    self.feedNotice=[[UILabel alloc] initWithFrame:CGRectMake(12,93,w-24,23)];
-    self.feedNotice.font=[UIFont systemFontOfSize:11];
-    self.feedNotice.textColor=[UIColor grayColor];
+    self.feedNotice=[[UILabel alloc] initWithFrame:CGRectMake(12,2,w-24,22)];
+    self.feedNotice.font=[UIFont systemFontOfSize:11];self.feedNotice.textColor=[UIColor grayColor];
     self.feedNotice.textAlignment=NSTextAlignmentCenter;
     self.feedNotice.autoresizingMask=UIViewAutoresizingFlexibleWidth;
     [header addSubview:self.feedNotice];
     self.tableView.tableHeaderView=header;
+    self.tableView.contentInset=UIEdgeInsetsMake(0,0,55,0);
+    self.tableView.scrollIndicatorInsets=UIEdgeInsetsMake(0,0,55,0);
+    self.tabButtons=[NSMutableArray array];
+    self.bottomNav=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,50)];
+    self.bottomNav.backgroundColor=[UIColor whiteColor];
+    self.bottomNav.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleTopMargin;
+    NSArray *tabs=@[@"推荐",@"热门",@"搜索",@"收藏",@"历史"];
+    for(NSInteger i=0;i<5;i++){
+        UIButton *button=[UIButton buttonWithType:UIButtonTypeCustom];
+        button.tag=i;button.frame=CGRectMake(i*w/5.0,0,w/5.0,50);
+        button.autoresizingMask=UIViewAutoresizingFlexibleWidth;
+        UIImageView *icon=[[UIImageView alloc] initWithFrame:CGRectMake((w/5.0-23)/2,5,23,23)];
+        icon.tag=900;icon.contentMode=UIViewContentModeScaleAspectFit;
+        [button addSubview:icon];
+        UILabel *label=[[UILabel alloc] initWithFrame:CGRectMake(0,30,w/5.0,16)];
+        label.tag=901;label.font=[UIFont systemFontOfSize:10];label.textAlignment=NSTextAlignmentCenter;
+        label.text=tabs[i];[button addSubview:label];
+        [button addTarget:self action:@selector(selectBottomTab:) forControlEvents:UIControlEventTouchUpInside];
+        [self.bottomNav addSubview:button];[self.tabButtons addObject:button];
+    }
+    UIView *separator=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,0.5)];
+    separator.backgroundColor=[UIColor colorWithWhite:0.86 alpha:1];
+    separator.autoresizingMask=UIViewAutoresizingFlexibleWidth;[self.bottomNav addSubview:separator];
+    [self refreshBottomTabs];
     UIView *footer=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,52)];
     UIButton *more=[UIButton buttonWithType:UIButtonTypeSystem];
     more.frame=CGRectMake(12,5,w-24,42);
@@ -2130,12 +2182,13 @@ static NSString *BLHLS(NSDictionary *json){
     [more addTarget:self action:@selector(loadMore) forControlEvents:UIControlEventTouchUpInside];
     [footer addSubview:more];self.moreButton=more;
     self.tableView.tableFooterView=footer;
-    self.navigationItem.rightBarButtonItems=@[
-        [[UIBarButtonItem alloc] initWithTitle:@"我的" style:UIBarButtonItemStylePlain target:self action:@selector(openAccount)],
-        [[UIBarButtonItem alloc] initWithTitle:@"直播" style:UIBarButtonItemStylePlain target:self action:@selector(openLive)]
-    ];
-    self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"BV号"
-      style:UIBarButtonItemStylePlain target:self action:@selector(openByBV)];
+    self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithImage:BLLineIcon(6,BLPink())
+      style:UIBarButtonItemStylePlain target:self action:@selector(openLive)];
+    UIBarButtonItem *searchItem=[[UIBarButtonItem alloc] initWithImage:BLLineIcon(2,BLPink())
+      style:UIBarButtonItemStylePlain target:self action:@selector(openSearch)];
+    UIBarButtonItem *accountItem=[[UIBarButtonItem alloc] initWithImage:BLLineIcon(5,BLPink())
+      style:UIBarButtonItemStylePlain target:self action:@selector(openAccount)];
+    self.navigationItem.rightBarButtonItems=@[accountItem,searchItem];
     UIRefreshControl *refresh=[UIRefreshControl new];
     [refresh addTarget:self action:@selector(refreshTapped) forControlEvents:UIControlEventValueChanged];
     self.refreshControl=refresh;
@@ -2144,6 +2197,9 @@ static NSString *BLHLS(NSDictionary *json){
 }
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    [self.navigationController.view addSubview:self.bottomNav];
+    [self positionBottomNav];
+    [self showBottomNav:YES];
     if(self.mode>=3)[self loadLocal];
     else if(self.mode==0){
         BOOL hasAccount=BLAuthCookie().length>0;
@@ -2153,8 +2209,77 @@ static NSString *BLHLS(NSDictionary *json){
         }
     }
 }
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self.bottomNav removeFromSuperview];
+}
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self positionBottomNav];
+}
+- (void)positionBottomNav {
+    UIView *parent=self.navigationController.view;
+    CGFloat w=parent.bounds.size.width;
+    self.bottomNav.frame=CGRectMake(0,parent.bounds.size.height-(self.navHidden?0:50),w,50);
+    for(NSInteger i=0;i<self.tabButtons.count;i++){
+        UIButton *b=self.tabButtons[i];b.frame=CGRectMake(i*w/5.0,0,w/5.0,50);
+        [b viewWithTag:900].frame=CGRectMake((w/5.0-23)/2,5,23,23);
+        [b viewWithTag:901].frame=CGRectMake(0,30,w/5.0,16);
+    }
+}
+- (void)refreshBottomTabs {
+    for(NSInteger i=0;i<self.tabButtons.count;i++){
+        UIButton *button=self.tabButtons[i];BOOL active=i==self.mode;
+        UIColor *tint=active?BLPink():[UIColor colorWithWhite:.55 alpha:1];
+        ((UIImageView *)[button viewWithTag:900]).image=BLLineIcon(i,tint);
+        ((UILabel *)[button viewWithTag:901]).textColor=tint;
+    }
+}
+- (void)showBottomNav:(BOOL)show {
+    BOOL hidden=!show;
+    if(self.navHidden==hidden){[self positionBottomNav];return;}
+    self.navHidden=hidden;
+    CGFloat w=self.navigationController.view.bounds.size.width;
+    CGFloat h=self.navigationController.view.bounds.size.height;
+    [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionBeginFromCurrentState|UIViewAnimationOptionCurveEaseOut animations:^{
+        self.bottomNav.frame=CGRectMake(0,h-(show?50:0),w,50);
+    } completion:nil];
+}
+- (void)selectBottomTab:(UIButton *)button {
+    [self showBottomNav:YES];
+    if(button.tag==2){[self openSearch];return;}
+    self.mode=button.tag;self.page=1;self.items=@[];self.loading=NO;
+    self.requestToken++;[self.tableView reloadData];[self updateFeedChrome];[self refreshBottomTabs];
+    [self.search resignFirstResponder];
+    if(self.mode>=3)[self loadLocal];else [self fetch];
+}
+- (void)openSearch {
+    self.mode=2;self.page=1;self.items=@[];self.loading=NO;self.requestToken++;
+    CGFloat w=self.view.bounds.size.width;
+    UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,78)];
+    header.backgroundColor=BLBg();self.search.frame=CGRectMake(0,0,w,51);
+    [header addSubview:self.search];self.feedNotice.frame=CGRectMake(12,53,w-24,22);
+    [header addSubview:self.feedNotice];self.tableView.tableHeaderView=header;
+    [self.tableView reloadData];[self updateFeedChrome];[self refreshBottomTabs];
+    if(self.query.length){self.search.text=self.query;[self fetch];}
+    else [self showMessage:@"输入关键词或 BV 号开始搜索"];
+    [self.search becomeFirstResponder];[self showBottomNav:YES];
+}
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    if(scrollView!=self.tableView)return;
+    CGFloat y=scrollView.contentOffset.y;
+    if(scrollView.dragging && y>0 && y-self.lastScrollY>1.5)[self showBottomNav:NO];
+    self.lastScrollY=y;
+}
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate {
+    if(!decelerate)[self showBottomNav:YES];
+}
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView {
+    [self showBottomNav:YES];
+}
 - (void)updateFeedChrome {
     self.moreButton.hidden=self.mode>=3 || (self.mode==2 && !self.query.length);
+    [self refreshBottomTabs];
     [self.moreButton setTitle:self.mode==0?@"换一批推荐":@"加载更多" forState:UIControlStateNormal];
     if(self.mode==0) {
         BOOL hasAccount=BLAuthCookie().length>0;
@@ -2162,17 +2287,6 @@ static NSString *BLHLS(NSDictionary *json){
     }else if(self.mode==1)self.feedNotice.text=@"热门榜 · 不根据账号个性化排序";
     else if(self.mode==2)self.feedNotice.text=@"关键词搜索 · 点击结果即可进入详情";
     else self.feedNotice.text=@"本地收藏和本地历史（云端内容请进入「我的」）";
-}
-- (void)changed:(UISegmentedControl *)control {
-    self.mode=control.selectedSegmentIndex;
-    self.page=1;self.items=@[];self.loading=NO;
-    self.requestToken++;
-    [self.tableView reloadData];
-    [self updateFeedChrome];
-    if(self.mode>=3)[self loadLocal];
-    else if(self.mode==2&&!self.query.length)[self showMessage:@"在上方输入关键词，点击键盘上的搜索"];
-    else [self fetch];
-    [self.search resignFirstResponder];
 }
 - (void)showMessage:(NSString *)message {
     self.tableView.backgroundView=nil;
@@ -2216,7 +2330,7 @@ static NSString *BLHLS(NSDictionary *json){
     if(!text.length)return;
     NSString *bvid=BLBV(text);
     if(bvid){[self openVideo:@{@"bvid":bvid,@"title":bvid}];return;}
-    self.query=text;self.mode=2;self.segments.selectedSegmentIndex=2;
+    self.query=text;self.mode=2;[self refreshBottomTabs];
     [self refresh];
 }
 - (void)fetch {
