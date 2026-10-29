@@ -510,6 +510,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
         [self.videoSurface addGestureRecognizer:hold];
     }
 
+    self.controlsVisible=YES;
     self.topBar=[[UIView alloc] initWithFrame:CGRectZero];
     self.topBar.backgroundColor=[UIColor colorWithWhite:0 alpha:.68];
     [self.view addSubview:self.topBar];
@@ -642,8 +643,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     [self.playControlButton setTitle:playing?@"Ⅱ":@"▶" forState:UIControlStateNormal];
     self.centerButton.hidden=playing;
     if(self.liveStream)self.currentTimeLabel.text=@"直播中";
-    if(playing && self.controlsVisible && !self.seeking)
-        [self performSelector:@selector(hideControls) withObject:nil afterDelay:4.0];
+    
 }
 - (void)togglePlayback {
     if([self isActuallyPlaying]){
@@ -739,8 +739,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     NSArray *speeds=@[@0.5,@0.75,@1.0,@1.25,@1.5,@2.0];
     for(NSNumber *number in speeds){
         float rate=[number floatValue];
-        NSString *title=[NSString stringWithFormat:@"%.2g×%@",fabsf(rate-self.preferredRate)<.01f?@" ✓":@"",@""];
-        title=[NSString stringWithFormat:@"%.2g×%@",rate,(fabsf(rate-self.preferredRate)<.01f?@"  ✓":@"")];
+        NSString *title=[NSString stringWithFormat:@"%.2g×%@",rate,(fabsf(rate-self.preferredRate)<.01f?@"  ✓":@"")];
         [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
             BOOL wasPlaying=[self isActuallyPlaying];
             self.preferredRate=rate;
@@ -792,6 +791,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
                     [self.player play];self.player.rate=self.preferredRate;
                 }
                 [self updatePlaybackUI];
+                [self showControls];
             }
         }else if(status==AVPlayerItemStatusFailed){
             NSString *reason=item.error.localizedDescription.length?item.error.localizedDescription:@"视频编码不受支持或播放地址已失效";
@@ -1066,29 +1066,47 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     if(!aid.length){BLAlert(self,@"评论暂不可用",@"需要先获取视频 AV 号，请稍后再试。");return;}
     [self.navigationController pushViewController:[[BLCommentsController alloc] initWithAid:aid] animated:YES];
 }
+- (void)requestPlayURLForBVID:(NSString *)bvid cid:(NSString *)cid quality:(NSInteger)quality allowFallback:(BOOL)allowFallback completion:(void (^)(NSString *, NSDictionary *, NSError *))completion {
+    NSString *url=[NSString stringWithFormat:@"https://api.bilibili.com/x/player/playurl?bvid=%@&cid=%@&qn=%ld&fnval=0&platform=html5",bvid,cid,(long)quality];
+    BLRequest(url,^(NSDictionary *json,NSError *err){
+        NSDictionary *data=[json[@"data"] isKindOfClass:[NSDictionary class]]?json[@"data"]:@{};
+        NSArray *rows=[data[@"durl"] isKindOfClass:[NSArray class]]?data[@"durl"]:@[];
+        NSString *stream=@"";
+        for(NSDictionary *part in rows){
+            if(![part isKindOfClass:[NSDictionary class]])continue;
+            NSString *candidate=BLString(part[@"url"]);
+            if(![candidate hasPrefix:@"https://"] && ![candidate hasPrefix:@"http://"]){
+                NSArray *backup=[part[@"backup_url"] isKindOfClass:[NSArray class]]?part[@"backup_url"]:@[];
+                candidate=backup.count?BLString(backup[0]):@"";
+            }
+            if([candidate hasPrefix:@"https://"] || [candidate hasPrefix:@"http://"]){stream=candidate;break;}
+        }
+        if(!stream.length && allowFallback && quality!=16){
+            [self requestPlayURLForBVID:bvid cid:cid quality:16 allowFallback:NO completion:completion];
+            return;
+        }
+        completion(stream,json,err);
+    });
+}
 - (void)playTapped {
     NSString *bvid=BLString(self.video[@"bvid"]),*cid=self.selectedCID.length?self.selectedCID:BLString(self.video[@"cid"]);
     if(!cid.length){BLAlert(self,@"暂不能播放",@"该视频没有返回 CID，或详情接口不可用。");return;}
     [self.playButton setTitle:@"获取播放地址…" forState:UIControlStateNormal];self.playButton.enabled=NO;
-    NSString *url=[NSString stringWithFormat:@"https://api.bilibili.com/x/player/playurl?bvid=%@&cid=%@&qn=%ld&fnval=0&platform=html5",bvid,cid,(long)self.quality];
-    BLRequest(url,^(NSDictionary *json,NSError *err){
+    [self requestPlayURLForBVID:bvid cid:cid quality:self.quality allowFallback:YES completion:^(NSString *stream, NSDictionary *json, NSError *err){
         [self.playButton setTitle:@"全屏播放" forState:UIControlStateNormal];self.playButton.enabled=YES;
-        NSDictionary *data=json[@"data"];
-        NSArray *d=[data isKindOfClass:[NSDictionary class]]&&[data[@"durl"] isKindOfClass:[NSArray class]]?data[@"durl"]:@[];
-        NSString *stream=d.count&&[d[0] isKindOfClass:[NSDictionary class]]?BLString(d[0][@"url"]):@"";
         if(![stream hasPrefix:@"https://"] && ![stream hasPrefix:@"http://"]){
-            BLAlert(self,@"暂无法播放",[NSString stringWithFormat:@"B站未返回 iOS 8 可播放的 MP4 地址。\n%@\n\n会员、DRM、DASH 与新编码视频目前不支持。",BLFailure(json,err)]);
+            BLAlert(self,@"暂无法播放",[NSString stringWithFormat:@"B站没有返回可用的兼容视频源。已自动尝试当前清晰度和 360P。\n%@\n\n部分 DASH、DRM、HEVC 或受限视频仍无法在 iPhone 4S 上播放。",BLFailure(json,err)]);
             return;
         }
         BLStore(@"bl_history_v1",self.video,NO);
         self.player=[[BLPlayerController alloc] initWithContentURL:[NSURL URLWithString:stream]];
         self.player.videoTitle=BLString(self.video[@"title"]);
         NSInteger actualQuality=[json[@"data"][@"quality"] integerValue];
-        self.player.qualityLabel=actualQuality==64?@"720P":(actualQuality==32?@"480P":@"360P");
+        self.player.qualityLabel=actualQuality>=80?@"1080P":(actualQuality>=64?@"720P":(actualQuality>=32?@"480P":@"360P"));
         self.player.videoKey=[NSString stringWithFormat:@"%@:%@",bvid,cid];
         self.player.resumeAt=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"bl_playback_positions"][self.player.videoKey] doubleValue];
         [self presentViewController:self.player animated:YES completion:nil];
-    });
+    }];
 }
 - (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section{return self.related.count;}
 - (UITableViewCell *)tableView:(UITableView *)table cellForRowAtIndexPath:(NSIndexPath *)index {
