@@ -1538,7 +1538,6 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
         NSInteger available=[json[@"data"][@"quality"] integerValue];
         if(available>=16){
             self.quality=available;
-            NSString *label=available>=80?@"1080P":(available>=64?@"720P":(available>=32?@"480P":@"360P"));
             [self updateQualityTitle];
         }
         self.stallEvents=0;self.goodChecks=0;self.stableSince=0;
