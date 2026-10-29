@@ -28,6 +28,7 @@ static NSInteger BLQualityForNetwork(void){
     }
     return cellular?32:64;
 }
+static NSInteger BLLiveSuggestedQuality(void){return BLQualityForNetwork()>=64?150:80;}
 static NSString *BLQualityName(NSInteger q){
     return q>=64?@"720P":q>=32?@"480P":@"360P";
 }
@@ -459,6 +460,9 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 @end
 
 
+typedef void (^BLLiveURLCallback)(NSString *streamURL, NSString *failure);
+static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFallback, BLLiveURLCallback completion);
+
 // A single shared AVPlayer allows seamless inline -> fullscreen -> inline
 // playback without restarting the network stream or losing position.
 @interface BLPlayerController : UIViewController
@@ -493,6 +497,9 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 @property(nonatomic,strong) UILabel *speedHint;
 @property(nonatomic,assign) CGFloat gestureStart;
 @property(nonatomic,assign) BOOL brightnessGesture;
+@property(nonatomic,copy) NSString *liveRoomID;
+@property(nonatomic,assign) NSInteger liveQuality;
+@property(nonatomic,assign) BOOL liveRecovering;
 @property(nonatomic,copy) void (^healthAction)(BOOL stalled);
 @end
 
@@ -697,7 +704,16 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     [self.playButton setImage:BLLineIcon(playing?8:7,[UIColor whiteColor]) forState:UIControlStateNormal];
     if(!playing){self.playButton.alpha=1;self.playButton.userInteractionEnabled=YES;}
     else {self.playButton.alpha=self.controlsVisible?1:0;self.playButton.userInteractionEnabled=self.controlsVisible;}
-    if(self.liveStream)return;
+    if(self.liveStream){
+        double rate=BLObservedBitrate(self.player.currentItem);
+        if(rate>250000 && BLNow()-self.resumeAt>=3){
+            self.resumeAt=BLNow();
+            double previous=[[NSUserDefaults standardUserDefaults] doubleForKey:@"bl_auto_bandwidth_bps_v1"];
+            double sample=MIN(rate,12000000);
+            [[NSUserDefaults standardUserDefaults] setDouble:previous>0?previous*.8+sample*.2:sample forKey:@"bl_auto_bandwidth_bps_v1"];
+        }
+        return;
+    }
     if(self.sharedPlayer)self.playerItem=self.player.currentItem;
     if(self.healthAction)self.healthAction(NO);
     NSTimeInterval d=[self duration],t=CMTimeGetSeconds(self.player.currentTime);
@@ -785,7 +801,32 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     }
 }
 - (void)playbackStalled:(NSNotification *)note {
-    if(note.object==self.player.currentItem && !self.liveStream && self.healthAction)self.healthAction(YES);
+    if(note.object!=self.player.currentItem)return;
+    if(self.liveStream)[self recoverLiveQuality];
+    else if(self.healthAction)self.healthAction(YES);
+}
+- (void)recoverLiveQuality {
+    if(!self.liveStream || self.liveRecovering || self.liveQuality<=80 || !self.liveRoomID.length)return;
+    self.liveRecovering=YES;
+    self.liveQuality=80;
+    self.statusText.text=@"网络波动，切换流畅直播…";
+    BLResolveLiveURL(self.liveRoomID,80,NO,^(NSString *stream,NSString *failure){
+        self.liveRecovering=NO;
+        if(!self.view.window)return;
+        if(!stream.length){
+            self.statusText.text=failure.length?failure:@"暂时无法获取流畅直播流";
+            return;
+        }
+        if(self.observingStatus){
+            [self.playerItem removeObserver:self forKeyPath:@"status" context:BLPlayerItemStatusContext];
+            self.observingStatus=NO;
+        }
+        self.playerItem=[AVPlayerItem playerItemWithURL:[NSURL URLWithString:stream]];
+        self.started=NO;
+        [self.player replaceCurrentItemWithPlayerItem:self.playerItem];
+        [self.playerItem addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionInitial context:BLPlayerItemStatusContext];
+        self.observingStatus=YES;
+    });
 }
 - (void)playbackEnded:(NSNotification *)note {
     if(note.object!=self.player.currentItem)return;
@@ -1575,7 +1616,6 @@ static NSString *BLHLS(NSDictionary *json){
 }
 
 
-typedef void (^BLLiveURLCallback)(NSString *streamURL, NSString *failure);
 static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFallback, BLLiveURLCallback completion) {
     if(!roomID.length){if(completion)completion(nil,@"缺少直播间号");return;}
     NSString *url=[NSString stringWithFormat:@"https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=%@&protocol=1&format=1&codec=0&qn=%ld&platform=web",roomID,(long)quality];
@@ -1617,7 +1657,7 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
 @end
 @implementation BLRoomDetailController
 - (instancetype)initWithRoom:(NSDictionary *)room {
-    if((self=[super init])){self.room=room?:@{};self.quality=150;self.imageCache=[NSCache new];self.imageCache.countLimit=4;}
+    if((self=[super init])){self.room=room?:@{};self.quality=BLLiveSuggestedQuality();self.imageCache=[NSCache new];self.imageCache.countLimit=4;}
     return self;
 }
 - (UIButton *)button:(NSString *)title frame:(CGRect)rect action:(SEL)selector {
@@ -1660,7 +1700,7 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
     self.qualityButton=[UIButton buttonWithType:UIButtonTypeSystem];
     self.qualityButton.frame=CGRectMake(12,410,136,42);
     self.qualityButton.backgroundColor=[UIColor whiteColor];self.qualityButton.layer.cornerRadius=9;
-    [self.qualityButton setTitle:@"画质：高清（150）" forState:UIControlStateNormal];
+    [self.qualityButton setTitle:self.quality==150?@"画质：高清（150）":@"画质：流畅（80）" forState:UIControlStateNormal];
     [self.qualityButton addTarget:self action:@selector(chooseQuality) forControlEvents:UIControlEventTouchUpInside];
     [holder addSubview:self.qualityButton];
     self.favoriteButton=[UIButton buttonWithType:UIButtonTypeSystem];
@@ -1726,6 +1766,8 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
     self.player=[[BLPlayerController alloc] initWithContentURL:[NSURL URLWithString:url]];
     self.player.liveStream=YES;
     self.player.videoTitle=BLString(self.room[@"title"]);
+    self.player.liveRoomID=BLString(self.room[@"roomid"]);
+    self.player.liveQuality=self.quality;
     [self presentViewController:self.player animated:YES completion:nil];
 }
 - (void)liveError:(NSString *)message {
@@ -1913,13 +1955,16 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
     }
     NSUInteger token=++self.liveRequestToken;
     [self showLiveLoading];
-    BLResolveLiveURL(roomID,150,YES,^(NSString *stream,NSString *failure){
+    NSInteger suggested=BLLiveSuggestedQuality();
+    BLResolveLiveURL(roomID,suggested,YES,^(NSString *stream,NSString *failure){
         if(token!=self.liveRequestToken)return;
         [self hideLiveLoading];
         if(stream.length){
             BLPlayerController *player=[[BLPlayerController alloc] initWithContentURL:[NSURL URLWithString:stream]];
             player.liveStream=YES;
             player.videoTitle=BLString(room[@"title"]);
+            player.liveRoomID=roomID;
+            player.liveQuality=suggested;
             self.livePlayer=player;
             [self presentViewController:player animated:YES completion:nil];
             return;
