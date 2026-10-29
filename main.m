@@ -619,6 +619,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 }
 - (void)tick {
     BOOL playing=[self playing];
+    self.statusText.hidden=self.statusText.text.length==0;
     [self.playButton setTitle:playing?@"Ⅱ":@"▶" forState:UIControlStateNormal];
     if(!playing){self.playButton.alpha=1;self.playButton.userInteractionEnabled=YES;}
     else {self.playButton.alpha=self.controlsVisible?1:0;self.playButton.userInteractionEnabled=self.controlsVisible;}
@@ -776,8 +777,8 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
         [self.slider addTarget:self action:@selector(seekUp) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchCancel];
         [self.bottom addSubview:self.slider];
         self.fullscreenButton=[UIButton buttonWithType:UIButtonTypeCustom];
-        [self.fullscreenButton setTitle:@"⛶" forState:UIControlStateNormal];
-        self.fullscreenButton.titleLabel.font=[UIFont boldSystemFontOfSize:23];
+        [self.fullscreenButton setTitle:@"全屏" forState:UIControlStateNormal];
+        self.fullscreenButton.titleLabel.font=[UIFont boldSystemFontOfSize:12];
         [self.fullscreenButton addTarget:self action:@selector(fullscreen) forControlEvents:UIControlEventTouchUpInside];
         [self.bottom addSubview:self.fullscreenButton];
         self.statusLabel=[[UILabel alloc] initWithFrame:CGRectZero];
@@ -902,6 +903,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
 }
 - (void)tick {
     BOOL play=[self playing];
+    self.statusLabel.hidden=self.statusLabel.text.length==0;
     [self.toggleButton setTitle:play?@"Ⅱ":@"▶" forState:UIControlStateNormal];
     self.toggleButton.alpha=(play && !self.expanded)?0:1;
     self.toggleButton.userInteractionEnabled=!play||self.expanded;
