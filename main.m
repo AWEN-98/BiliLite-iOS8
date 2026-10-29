@@ -1093,6 +1093,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     [super viewDidAppear:animated];
     if(self.presentingFullscreen){
         [self.inlinePlayer attachPlayerToSurface:YES];
+        self.inlinePlayer.speed=self.player.speed;
         self.presentingFullscreen=NO;
         self.player=nil;
         if(self.inlinePlayer.player && !self.inlinePlayer.finished && self.inlinePlayer.player.rate==0)
@@ -1146,7 +1147,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     if(self.partButton){
         NSUInteger index=0;
         for(NSUInteger i=0;i<self.parts.count;i++)if([BLString(self.parts[i][@"cid"]) isEqualToString:self.selectedCID]){index=i;break;}
-        [self.partButton setTitle:[NSString stringWithFormat:@"选集 P%lu",(unsigned long)(index+1)] forState:UIControlStateNormal];
+        [self.partButton setTitle:[NSString stringWithFormat:@"P%lu 选集",(unsigned long)(index+1)] forState:UIControlStateNormal];
     }
     BLFetchImage(BLString(self.video[@"pic"]),self.cover,self.imageCache);
 }
@@ -1164,6 +1165,7 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
                 for(NSDictionary *part in self.parts)if([BLString(part[@"cid"]) isEqualToString:self.selectedCID]){valid=YES;break;}
                 if(!valid)self.selectedCID=BLString(data[@"cid"]);
                 [self render];
+                if(!self.hasRequestedVideo && self.selectedCID.length)[self playTapped];
             }
         }else self.descriptionBox.text=[NSString stringWithFormat:@"简介不可用：%@",BLFailure(json,error)];
     });
@@ -1200,7 +1202,12 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
         NSString *label=[NSString stringWithFormat:@"P%lu  %@",(unsigned long)(i+1),BLString(part[@"part"])];
         NSString *cid=BLString(part[@"cid"]);
         [menu addAction:[UIAlertAction actionWithTitle:label style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
-            self.selectedCID=cid;[self render];
+            if(![self.selectedCID isEqualToString:cid]){
+                [self saveActivePosition];
+                self.selectedCID=cid;
+                [self render];
+                [self playTapped];
+            }
         }]];
     }
     if(end<self.parts.count)[menu addAction:[UIAlertAction actionWithTitle:@"更多分P…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
@@ -1218,8 +1225,12 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     for(NSNumber *value in @[@16,@32,@64]){
         NSString *name=[value integerValue]==16?@"360P（最稳定）":[value integerValue]==32?@"480P":@"720P";
         [menu addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
-            self.quality=[value integerValue];
-            [self.qualityButton setTitle:[NSString stringWithFormat:@"清晰度 %@",name] forState:UIControlStateNormal];
+            NSInteger nextQuality=[value integerValue];
+            if(nextQuality==self.quality)return;
+            [self saveActivePosition];
+            self.quality=nextQuality;
+            [self.qualityButton setTitle:[NSString stringWithFormat:@"%@ 画质",name] forState:UIControlStateNormal];
+            [self playTapped];
         }]];
     }
     [menu addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -1253,23 +1264,42 @@ static void *BLPlayerItemStatusContext = &BLPlayerItemStatusContext;
     });
 }
 - (void)playTapped {
-    NSString *bvid=BLString(self.video[@"bvid"]),*cid=self.selectedCID.length?self.selectedCID:BLString(self.video[@"cid"]);
-    if(!cid.length){BLAlert(self,@"暂不能播放",@"该视频没有返回 CID，或详情接口不可用。");return;}
-    [self.playButton setTitle:@"获取播放地址…" forState:UIControlStateNormal];self.playButton.enabled=NO;
-    [self requestPlayURLForBVID:bvid cid:cid quality:self.quality allowFallback:YES completion:^(NSString *stream, NSDictionary *json, NSError *err){
-        [self.playButton setTitle:@"全屏播放" forState:UIControlStateNormal];self.playButton.enabled=YES;
-        if(![stream hasPrefix:@"https://"] && ![stream hasPrefix:@"http://"]){
-            BLAlert(self,@"暂无法播放",[NSString stringWithFormat:@"B站没有返回可用的兼容视频源。已自动尝试当前清晰度和 360P。\n%@\n\n部分 DASH、DRM、HEVC 或受限视频仍无法在 iPhone 4S 上播放。",BLFailure(json,err)]);
+    NSString *bvid=BLString(self.video[@"bvid"]);
+    NSString *cid=self.selectedCID.length?self.selectedCID:BLString(self.video[@"cid"]);
+    if(!cid.length){
+        [self.inlinePlayer showLoading:@"正在获取视频信息…"];
+        return;
+    }
+    self.hasRequestedVideo=YES;
+    NSUInteger serial=++self.requestSerial;
+    BOOL samePart=[self.activeCID isEqualToString:cid];
+    NSTimeInterval resume=0;
+    if(samePart && self.inlinePlayer.player){
+        resume=CMTimeGetSeconds(self.inlinePlayer.player.currentTime);
+        if(!isfinite(resume)||resume<0)resume=0;
+    }
+    if(!samePart || resume<1){
+        NSString *key=[NSString stringWithFormat:@"%@:%@",bvid,cid];
+        resume=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"bl_playback_positions"][key] doubleValue];
+    }
+    [self.inlinePlayer.player pause];
+    [self.inlinePlayer showLoading:@"正在获取播放地址…"];
+    [self requestPlayURLForBVID:bvid cid:cid quality:self.quality allowFallback:YES completion:^(NSString *stream, NSDictionary *json, NSError *error){
+        if(serial!=self.requestSerial)return;
+        if(![stream hasPrefix:@"http://"] && ![stream hasPrefix:@"https://"]){
+            [self.inlinePlayer showLoading:[NSString stringWithFormat:@"暂时无法播放：%@。轻点重试",BLFailure(json,error)]];
+            self.inlinePlayer.toggleButton.hidden=NO;
             return;
         }
+        self.activeCID=cid;
+        NSInteger available=[json[@"data"][@"quality"] integerValue];
+        if(available>=16){
+            self.quality=available;
+            NSString *label=available>=80?@"1080P":(available>=64?@"720P":(available>=32?@"480P":@"360P"));
+            [self.qualityButton setTitle:[label stringByAppendingString:@" 画质"] forState:UIControlStateNormal];
+        }
         BLStore(@"bl_history_v1",self.video,NO);
-        self.player=[[BLPlayerController alloc] initWithContentURL:[NSURL URLWithString:stream]];
-        self.player.videoTitle=BLString(self.video[@"title"]);
-        NSInteger actualQuality=[json[@"data"][@"quality"] integerValue];
-        self.player.qualityLabel=actualQuality>=80?@"1080P":(actualQuality>=64?@"720P":(actualQuality>=32?@"480P":@"360P"));
-        self.player.videoKey=[NSString stringWithFormat:@"%@:%@",bvid,cid];
-        self.player.resumeAt=[[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"bl_playback_positions"][self.player.videoKey] doubleValue];
-        [self presentViewController:self.player animated:YES completion:nil];
+        [self.inlinePlayer playURL:[NSURL URLWithString:stream] position:resume];
     }];
 }
 - (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section{return self.related.count;}
