@@ -7,6 +7,7 @@
 #include <time.h>
 #import <Security/Security.h>
 #import <CoreImage/CoreImage.h>
+#import <ImageIO/ImageIO.h>
 
 static UIImage *BLLineIcon(NSInteger type, UIColor *color);
 
@@ -427,27 +428,35 @@ static void BLRecommend(NSInteger freshIndex,BLJSONCallback done){
 }
 
 static void BLFetchImage(NSString *address,UIImageView *view,NSCache *cache){
+    // Mark each reuse so an older request cannot overwrite a newer cover.
+    view.accessibilityIdentifier=address?:@"";
     view.image=nil;
     if(![address hasPrefix:@"https://"] && ![address hasPrefix:@"http://"])return;
-    view.accessibilityIdentifier=address;
     UIImage *cached=[cache objectForKey:address];
     if(cached){view.image=cached;return;}
     NSURLRequest *request=[NSURLRequest requestWithURL:[NSURL URLWithString:address] cachePolicy:NSURLRequestReturnCacheDataElseLoad timeoutInterval:12];
     [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data,NSURLResponse *res,NSError *err){
-        if(err||data.length>550000||!data.length)return;
-        UIImage *image=[UIImage imageWithData:data];
-        if(!image)return;
-        // Decode the full source only briefly, then cache a small thumbnail.
-        UIGraphicsBeginImageContextWithOptions(CGSizeMake(130,84),YES,1.0);
-        [image drawInRect:CGRectMake(0,0,130,84)];
-        UIImage *small=UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-        if(!small)return;
-        image=small;
-        [cache setObject:image forKey:address];
-        dispatch_async(dispatch_get_main_queue(),^{
-            if([view.accessibilityIdentifier isEqualToString:address])view.image=image;
-        });
+        if(err||!data.length||data.length>900000)return;
+        @autoreleasepool{
+            // Decode at thumbnail resolution to avoid multi-megapixel allocations
+            // on the 512 MB iPhone 4S.
+            CGImageSourceRef source=CGImageSourceCreateWithData((__bridge CFDataRef)data,NULL);
+            if(!source)return;
+            NSDictionary *options=@{(__bridge id)kCGImageSourceCreateThumbnailFromImageAlways:@YES,
+                (__bridge id)kCGImageSourceCreateThumbnailWithTransform:@YES,
+                (__bridge id)kCGImageSourceThumbnailMaxPixelSize:@240,
+                (__bridge id)kCGImageSourceShouldCache:@NO};
+            CGImageRef thumbnail=CGImageSourceCreateThumbnailAtIndex(source,0,(__bridge CFDictionaryRef)options);
+            CFRelease(source);
+            if(!thumbnail)return;
+            UIImage *small=[UIImage imageWithCGImage:thumbnail];
+            NSUInteger cost=CGImageGetBytesPerRow(thumbnail)*CGImageGetHeight(thumbnail);
+            CGImageRelease(thumbnail);
+            [cache setObject:small forKey:address cost:cost];
+            dispatch_async(dispatch_get_main_queue(),^{
+                if([view.accessibilityIdentifier isEqualToString:address])view.image=small;
+            });
+        }
     }] resume];
 }
 
@@ -1210,7 +1219,7 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
     CGFloat videoHeight=roundf(w*9.0f/16.0f);
     self.inlinePlayer=[[BLInlinePlayer alloc] initWithFrame:CGRectMake(0,0,w,videoHeight)];
     self.inlinePlayer.autoresizingMask=UIViewAutoresizingFlexibleWidth;
-    __unsafe_unretained BLDetailController *owner=self;
+    __weak BLDetailController *owner=self;
     self.inlinePlayer.fullScreenAction=^{[owner showFullscreen];};
     self.inlinePlayer.retryAction=^{[owner playTapped];};
     self.inlinePlayer.healthAction=^(BOOL stalled){[owner checkAdaptiveQuality:stalled];};
@@ -1270,17 +1279,19 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
         self.inlinePlayer.speed=self.player.speed;
         self.presentingFullscreen=NO;
         self.player=nil;
-        if(self.inlinePlayer.player && !self.inlinePlayer.finished && self.inlinePlayer.player.rate==0)
-            [self.inlinePlayer.player play];
+        // The shared AVPlayer already preserves playing/paused state.
         [self.inlinePlayer tick];
     }else if(self.wasPlayingBeforeLeave && self.inlinePlayer.player && !self.inlinePlayer.finished){
         [self.inlinePlayer.player play];
         self.wasPlayingBeforeLeave=NO;
+    }else if(self.hasRequestedVideo && !self.autoChanging && !self.inlinePlayer.player && self.selectedCID.length){
+        [self playTapped];
     }
 }
 - (void)viewWillDisappear:(BOOL)animated {
     if(!self.presentingFullscreen){
         self.requestSerial++;
+        self.autoChanging=NO;
         self.wasPlayingBeforeLeave=[self.inlinePlayer playing];
         [self saveActivePosition];
         [self.inlinePlayer.player pause];
@@ -1308,7 +1319,7 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
     self.player.videoKey=[NSString stringWithFormat:@"%@:%@",BLString(self.video[@"bvid"]),self.activeCID?:@""];
     self.player.qualityLabel=self.quality==16?@"360P":(self.quality==32?@"480P":@"720P");
     self.player.speed=self.inlinePlayer.speed;
-    __unsafe_unretained BLDetailController *owner=self;
+    __weak BLDetailController *owner=self;
     self.player.healthAction=^(BOOL stalled){[owner checkAdaptiveQuality:stalled];};
     self.presentingFullscreen=YES;
     [self.inlinePlayer attachPlayerToSurface:NO];
@@ -2680,6 +2691,16 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
 
 
 static UIImage *BLLineIcon(NSInteger type, UIColor *color) {
+    // Player controls refresh frequently: reuse previously drawn line icons.
+    static NSCache *iconCache=nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken,^{
+        iconCache=[NSCache new];
+        iconCache.countLimit=52;
+    });
+    NSString *key=[NSString stringWithFormat:@"%ld:%@",(long)type,color];
+    UIImage *cached=[iconCache objectForKey:key];
+    if(cached)return cached;
     UIGraphicsBeginImageContextWithOptions(CGSizeMake(24,24),NO,0);
     CGContextRef c=UIGraphicsGetCurrentContext();CGContextSetStrokeColorWithColor(c,color.CGColor);
     CGContextSetLineWidth(c,1.7);CGContextSetLineCap(c,kCGLineCapRound);CGContextSetLineJoin(c,kCGLineJoinRound);
@@ -2729,7 +2750,11 @@ static UIImage *BLLineIcon(NSInteger type, UIColor *color) {
         CGContextMoveToPoint(c,4,14);CGContextAddLineToPoint(c,4,20);CGContextAddLineToPoint(c,10,20);
         CGContextMoveToPoint(c,14,20);CGContextAddLineToPoint(c,20,20);CGContextAddLineToPoint(c,20,14);
     }
-    CGContextStrokePath(c);UIImage *image=UIGraphicsGetImageFromCurrentImageContext();UIGraphicsEndImageContext();return image;
+    CGContextStrokePath(c);
+    UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    if(image)[iconCache setObject:image forKey:key];
+    return image;
 }
 
 @interface BLListController : UITableViewController <UISearchBarDelegate,UITextFieldDelegate>
@@ -2873,6 +2898,7 @@ static UIImage *BLLineIcon(NSInteger type, UIColor *color) {
     [self showBottomNav:YES];
     if(button.tag==2){[self openSearch];return;}
     self.mode=button.tag;self.page=1;self.items=@[];self.loading=NO;
+    [UIApplication sharedApplication].networkActivityIndicatorVisible=NO;
     CGFloat w=self.view.bounds.size.width;
     UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,26)];
     header.backgroundColor=BLBg();self.feedNotice.frame=CGRectMake(12,2,w-24,22);
@@ -2883,6 +2909,7 @@ static UIImage *BLLineIcon(NSInteger type, UIColor *color) {
 }
 - (void)openSearch {
     self.mode=2;self.page=1;self.items=@[];self.loading=NO;self.requestToken++;
+    [UIApplication sharedApplication].networkActivityIndicatorVisible=NO;
     CGFloat w=self.view.bounds.size.width;
     UIView *header=[[UIView alloc] initWithFrame:CGRectMake(0,0,w,78)];
     header.backgroundColor=BLBg();self.search.frame=CGRectMake(0,0,w,51);
@@ -2934,6 +2961,7 @@ static UIImage *BLLineIcon(NSInteger type, UIColor *color) {
 - (void)refreshTapped {[self refresh];}
 - (void)refresh {
     self.requestToken++;self.loading=NO;
+    [UIApplication sharedApplication].networkActivityIndicatorVisible=NO;
     self.page=1;self.items=@[];
     if(self.mode==0)self.freshIndex++;
     [self.tableView reloadData];
