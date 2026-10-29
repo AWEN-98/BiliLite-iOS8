@@ -1437,6 +1437,35 @@ static NSString *BLHLS(NSDictionary *json){
     return nil;
 }
 
+
+typedef void (^BLLiveURLCallback)(NSString *streamURL, NSString *failure);
+static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFallback, BLLiveURLCallback completion) {
+    if(!roomID.length){if(completion)completion(nil,@"缺少直播间号");return;}
+    NSString *url=[NSString stringWithFormat:@"https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=%@&protocol=1&format=1&codec=0&qn=%ld&platform=web",roomID,(long)quality];
+    BLRequest(url,^(NSDictionary *json,NSError *error){
+        NSString *hls=BLHLS(json);
+        if(hls.length){if(completion)completion(hls,nil);return;}
+        NSString *legacyURL=[NSString stringWithFormat:@"https://api.live.bilibili.com/room/v1/Room/playUrl?cid=%@&platform=h5&qn=%ld",roomID,(long)quality];
+        BLRequest(legacyURL,^(NSDictionary *legacy,NSError *legacyError){
+            NSDictionary *data=[legacy[@"data"] isKindOfClass:[NSDictionary class]]?legacy[@"data"]:@{};
+            NSArray *rows=[data[@"durl"] isKindOfClass:[NSArray class]]?data[@"durl"]:@[];
+            NSString *stream=rows.count && [rows[0] isKindOfClass:[NSDictionary class]]?BLString(rows[0][@"url"]):@"";
+            if(([stream hasPrefix:@"https://"]||[stream hasPrefix:@"http://"]) &&
+                [stream rangeOfString:@".m3u8"].location!=NSNotFound){
+                if(completion)completion(stream,nil);
+                return;
+            }
+            if(allowFallback && quality>80){
+                BLResolveLiveURL(roomID,80,NO,completion);
+                return;
+            }
+            NSString *message=BLFailure(json,error);
+            if(!message.length)message=BLFailure(legacy,legacyError);
+            if(completion)completion(nil,message.length?message:@"没有兼容的 HLS/AVC 直播流");
+        });
+    });
+}
+
 @interface BLRoomDetailController : UIViewController
 @property(nonatomic,strong) NSDictionary *room;
 @property(nonatomic,strong) UIImageView *cover;
@@ -1451,7 +1480,7 @@ static NSString *BLHLS(NSDictionary *json){
 @end
 @implementation BLRoomDetailController
 - (instancetype)initWithRoom:(NSDictionary *)room {
-    if((self=[super init])){self.room=room?:@{};self.quality=80;self.imageCache=[NSCache new];self.imageCache.countLimit=4;}
+    if((self=[super init])){self.room=room?:@{};self.quality=150;self.imageCache=[NSCache new];self.imageCache.countLimit=4;}
     return self;
 }
 - (UIButton *)button:(NSString *)title frame:(CGRect)rect action:(SEL)selector {
@@ -1494,7 +1523,7 @@ static NSString *BLHLS(NSDictionary *json){
     self.qualityButton=[UIButton buttonWithType:UIButtonTypeSystem];
     self.qualityButton.frame=CGRectMake(12,410,136,42);
     self.qualityButton.backgroundColor=[UIColor whiteColor];self.qualityButton.layer.cornerRadius=9;
-    [self.qualityButton setTitle:@"画质：流畅（80）" forState:UIControlStateNormal];
+    [self.qualityButton setTitle:@"画质：高清（150）" forState:UIControlStateNormal];
     [self.qualityButton addTarget:self action:@selector(chooseQuality) forControlEvents:UIControlEventTouchUpInside];
     [holder addSubview:self.qualityButton];
     self.favoriteButton=[UIButton buttonWithType:UIButtonTypeSystem];
@@ -1543,7 +1572,7 @@ static NSString *BLHLS(NSDictionary *json){
     [self render];
 }
 - (void)chooseQuality {
-    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"直播画质" message:@"建议优先使用流畅版，降低卡顿" preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"直播画质" message:@"优先高清，无法获取兼容直播流时自动尝试流畅画质" preferredStyle:UIAlertControllerStyleActionSheet];
     for(NSNumber *quality in @[@80,@150]){
         NSString *title=[quality integerValue]==80?@"流畅（80）":@"高清（150）";
         [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
@@ -1570,20 +1599,9 @@ static NSString *BLHLS(NSDictionary *json){
     if([self.room[@"live_status"] integerValue]==0){BLAlert(self,@"尚未开播",@"主播目前不在直播中，可以收藏并稍后再试。");return;}
     NSString *rid=BLString(self.room[@"roomid"]);if(!rid.length){[self liveError:@"缺少直播间号"];return;}
     [self.playButton setTitle:@"正在寻找兼容直播源…" forState:UIControlStateNormal];self.playButton.enabled=NO;
-    NSString *url=[NSString stringWithFormat:@"https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=%@&protocol=1&format=1&codec=0&qn=%ld&platform=web",rid,(long)self.quality];
-    BLRequest(url,^(NSDictionary *json,NSError *error){
-        NSString *hls=BLHLS(json);
-        if(hls.length){[self playLiveURL:hls];return;}
-        // Some endpoints still expose older H5 HLS streams.
-        NSString *old=[NSString stringWithFormat:@"https://api.live.bilibili.com/room/v1/Room/playUrl?cid=%@&platform=h5&qn=%ld",rid,(long)self.quality];
-        BLRequest(old,^(NSDictionary *legacy,NSError *legacyError){
-            NSDictionary *data=[legacy[@"data"] isKindOfClass:[NSDictionary class]]?legacy[@"data"]:@{};
-            NSArray *durl=[data[@"durl"] isKindOfClass:[NSArray class]]?data[@"durl"]:@[];
-            NSString *stream=durl.count && [durl[0] isKindOfClass:[NSDictionary class]]?BLString(durl[0][@"url"]):@"";
-            if([stream rangeOfString:@".m3u8"].location!=NSNotFound && ([stream hasPrefix:@"https://"]||[stream hasPrefix:@"http://"]))
-                [self playLiveURL:stream];
-            else [self liveError:BLFailure(json,error)?:BLFailure(legacy,legacyError)];
-        });
+    BLResolveLiveURL(rid,self.quality,YES,^(NSString *stream,NSString *failure){
+        if(stream.length)[self playLiveURL:stream];
+        else [self liveError:failure];
     });
 }
 @end
@@ -1593,6 +1611,9 @@ static NSString *BLHLS(NSDictionary *json){
 @property(nonatomic,strong) NSCache *imageCache;
 @property(nonatomic,assign) BOOL showFavorites;
 @property(nonatomic,strong) UISegmentedControl *segments;
+@property(nonatomic,strong) UIView *liveLoading;
+@property(nonatomic,strong) BLPlayerController *livePlayer;
+@property(nonatomic,assign) NSUInteger liveRequestToken;
 @end
 @implementation BLLiveListController
 - (void)viewDidLoad {
@@ -1617,6 +1638,11 @@ static NSString *BLHLS(NSDictionary *json){
     [super viewWillAppear:animated];
     if(self.showFavorites)[self loadFavorites];
 }
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    self.liveRequestToken++;
+    [self hideLiveLoading];
+}
 - (void)switchMode {
     self.showFavorites=self.segments.selectedSegmentIndex==1;
     [self refreshRooms];
@@ -1630,7 +1656,7 @@ static NSString *BLHLS(NSDictionary *json){
 - (void)loadFavorites {
     self.rooms=BLStored(@"bl_live_favorites_v1");
     [self.tableView reloadData];[self.refreshControl endRefreshing];
-    [self showEmpty:self.rooms.count?@"":@"还没有收藏的直播间，可以在详情页点击收藏。"];
+    [self showEmpty:self.rooms.count?@"":@"还没有收藏的直播间。点击直播右侧的更多按钮可进入详情收藏。"];
 }
 - (void)refreshRooms {
     if(self.showFavorites){[self loadFavorites];return;}
@@ -1664,7 +1690,7 @@ static NSString *BLHLS(NSDictionary *json){
     [a addAction:[UIAlertAction actionWithTitle:@"进入" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
         NSString *rid=BLRoomInput(a.textFields.firstObject.text);
         if(!rid){BLAlert(self,@"房间号无效",@"请输入数字房间号或直播间 URL。");return;}
-        [self.navigationController pushViewController:[[BLRoomDetailController alloc] initWithRoom:@{@"roomid":rid,@"title":[@"房间 " stringByAppendingString:rid],@"live_status":@1}] animated:YES];
+        [self openLiveRoom:@{@"roomid":rid,@"title":[@"房间 " stringByAppendingString:rid],@"live_status":@1}];
     }]];
     [self presentViewController:a animated:YES completion:nil];
 }
@@ -1685,6 +1711,16 @@ static NSString *BLHLS(NSDictionary *json){
         [cell.contentView addSubview:meta];cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;
     }
     NSDictionary *room=self.rooms[index.row];
+    CGFloat textWidth=MAX(105,table.bounds.size.width-117-50);
+    [cell.contentView viewWithTag:932].frame=CGRectMake(117,10,textWidth,44);
+    [cell.contentView viewWithTag:933].frame=CGRectMake(117,57,textWidth,21);
+    UIButton *more=[UIButton buttonWithType:UIButtonTypeCustom];
+    more.frame=CGRectMake(0,0,36,44);
+    more.tag=index.row;
+    more.accessibilityLabel=@"直播间详情与收藏";
+    [more setImage:BLLineIcon(11,BLPink()) forState:UIControlStateNormal];
+    [more addTarget:self action:@selector(openLiveDetails:) forControlEvents:UIControlEventTouchUpInside];
+    cell.accessoryView=more;
     ((UILabel *)[cell.contentView viewWithTag:932]).text=room[@"title"];
     ((UILabel *)[cell.contentView viewWithTag:933]).text=[NSString stringWithFormat:@"%@ · %@",room[@"uname"]?:@"",room[@"area"]?:@""];
     BLFetchImage(BLString(room[@"cover"]),(UIImageView *)[cell.contentView viewWithTag:931],self.imageCache);
@@ -1692,7 +1728,75 @@ static NSString *BLHLS(NSDictionary *json){
 }
 - (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)index {
     [table deselectRowAtIndexPath:index animated:YES];
-    [self.navigationController pushViewController:[[BLRoomDetailController alloc] initWithRoom:self.rooms[index.row]] animated:YES];
+    if(index.row<self.rooms.count)[self openLiveRoom:self.rooms[index.row]];
+}
+- (void)openLiveDetails:(UIButton *)sender {
+    NSInteger row=sender.tag;
+    if(row<0 || row>=self.rooms.count)return;
+    [self.navigationController pushViewController:[[BLRoomDetailController alloc] initWithRoom:self.rooms[row]] animated:YES];
+}
+- (void)hideLiveLoading {
+    [self.liveLoading removeFromSuperview];
+    self.liveLoading=nil;
+}
+- (void)cancelLiveLoading {
+    self.liveRequestToken++;
+    [self hideLiveLoading];
+}
+- (void)showLiveLoading {
+    [self hideLiveLoading];
+    UIView *shade=[[UIView alloc] initWithFrame:self.navigationController.view.bounds];
+    shade.backgroundColor=[UIColor colorWithWhite:0 alpha:.90];
+    shade.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    UIActivityIndicatorView *spinner=[[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
+    spinner.center=CGPointMake(CGRectGetMidX(shade.bounds),CGRectGetMidY(shade.bounds)-25);
+    spinner.autoresizingMask=UIViewAutoresizingFlexibleLeftMargin|UIViewAutoresizingFlexibleRightMargin|UIViewAutoresizingFlexibleTopMargin|UIViewAutoresizingFlexibleBottomMargin;
+    [shade addSubview:spinner];[spinner startAnimating];
+    UILabel *label=[[UILabel alloc] initWithFrame:CGRectMake(16,CGRectGetMidY(shade.bounds)+7,shade.bounds.size.width-32,27)];
+    label.text=@"正在连接直播…";label.textColor=[UIColor whiteColor];
+    label.textAlignment=NSTextAlignmentCenter;label.font=[UIFont systemFontOfSize:13];
+    label.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleTopMargin|UIViewAutoresizingFlexibleBottomMargin;
+    [shade addSubview:label];
+    UIButton *cancel=[UIButton buttonWithType:UIButtonTypeSystem];
+    cancel.frame=CGRectMake((shade.bounds.size.width-100)/2,CGRectGetMidY(shade.bounds)+49,100,35);
+    cancel.autoresizingMask=UIViewAutoresizingFlexibleLeftMargin|UIViewAutoresizingFlexibleRightMargin|UIViewAutoresizingFlexibleTopMargin|UIViewAutoresizingFlexibleBottomMargin;
+    [cancel setTitle:@"取消" forState:UIControlStateNormal];
+    [cancel setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    [cancel addTarget:self action:@selector(cancelLiveLoading) forControlEvents:UIControlEventTouchUpInside];
+    [shade addSubview:cancel];
+    self.liveLoading=shade;
+    [self.navigationController.view addSubview:shade];
+}
+- (void)openLiveRoom:(NSDictionary *)room {
+    NSString *roomID=BLString(room[@"roomid"]);
+    if(!roomID.length){BLAlert(self,@"无法打开",@"缺少直播间号");return;}
+    if([room[@"live_status"] respondsToSelector:@selector(integerValue)] && [room[@"live_status"] integerValue]==0){
+        BLAlert(self,@"尚未开播",@"该直播间目前没有开播。");
+        return;
+    }
+    NSUInteger token=++self.liveRequestToken;
+    [self showLiveLoading];
+    BLResolveLiveURL(roomID,150,YES,^(NSString *stream,NSString *failure){
+        if(token!=self.liveRequestToken)return;
+        [self hideLiveLoading];
+        if(stream.length){
+            BLPlayerController *player=[[BLPlayerController alloc] initWithContentURL:[NSURL URLWithString:stream]];
+            player.liveStream=YES;
+            player.videoTitle=BLString(room[@"title"]);
+            self.livePlayer=player;
+            [self presentViewController:player animated:YES completion:nil];
+            return;
+        }
+        UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"直播暂时无法播放"
+            message:[NSString stringWithFormat:@"%@\n部分直播间可能只提供 iPhone 4S 无法解码的流。",failure?:@"未获取到兼容直播源"]
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"直播详情" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            [self.navigationController pushViewController:[[BLRoomDetailController alloc] initWithRoom:room] animated:YES];
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"重试" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self openLiveRoom:room];}]];
+        [self presentViewController:alert animated:YES completion:nil];
+    });
 }
 @end
 
