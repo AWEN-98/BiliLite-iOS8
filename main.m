@@ -508,6 +508,7 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
 @property(nonatomic,assign) BOOL brightnessGesture;
 @property(nonatomic,copy) NSString *liveRoomID;
 @property(nonatomic,assign) NSInteger liveQuality;
+@property(nonatomic,assign) BOOL liveAutomatic;
 @property(nonatomic,assign) BOOL liveRecovering;
 @property(nonatomic,copy) void (^healthAction)(BOOL stalled);
 @end
@@ -815,7 +816,7 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
     else if(self.healthAction)self.healthAction(YES);
 }
 - (void)recoverLiveQuality {
-    if(!self.liveStream || self.liveRecovering || self.liveQuality<=80 || !self.liveRoomID.length)return;
+    if(!self.liveStream || !self.liveAutomatic || self.liveRecovering || self.liveQuality<=80 || !self.liveRoomID.length)return;
     self.liveRecovering=YES;
     self.liveQuality=80;
     self.statusText.text=@"网络波动，切换流畅直播…";
@@ -1834,14 +1835,17 @@ static void BLResolveLiveURL(NSString *roomID, NSInteger quality, BOOL allowFall
     self.fullscreenPlayer.videoTitle=BLString(self.room[@"title"]);
     self.fullscreenPlayer.liveRoomID=BLString(self.room[@"roomid"]);
     self.fullscreenPlayer.liveQuality=self.quality;
+    self.fullscreenPlayer.liveAutomatic=self.qualityAuto;
     [self presentViewController:self.fullscreenPlayer animated:YES completion:nil];
 }
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     if(self.presentingFullscreen){
         self.presentingFullscreen=NO;
+        if(self.fullscreenPlayer)self.quality=self.fullscreenPlayer.liveQuality;
         ((AVPlayerLayer *)self.surface.layer).player=self.player;
         self.fullscreenPlayer=nil;
+        [self updateButtons];
         [self refreshPlayback];
     }
 }
